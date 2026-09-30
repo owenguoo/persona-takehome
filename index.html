@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="theme-color" content="#f9f9f9" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#161618" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Messages</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-layout="auto">
+
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+  <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 20.5 20.5"/></symbol>
+  <symbol id="i-compose" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4.5H7A2.5 2.5 0 0 0 4.5 7v10A2.5 2.5 0 0 0 7 19.5h10a2.5 2.5 0 0 0 2.5-2.5v-4"/><path d="M17.6 3.9a1.9 1.9 0 0 1 2.7 2.7l-7.6 7.6-3.4.8.8-3.4z"/></symbol>
+  <symbol id="i-video" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="2.5" y="6" width="13" height="12" rx="3"/><path d="M15.5 10.4l4.8-2.9c.5-.3 1.2.1 1.2.7v7.6c0 .6-.7 1-1.2.7l-4.8-2.9z"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5"/><circle cx="12" cy="7.7" r=".7" fill="currentColor"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5.5v13M5.5 12h13"/></symbol>
+  <symbol id="i-arrow-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5.5M6.5 11 12 5.5 17.5 11"/></symbol>
+  <symbol id="i-wave" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 10.5v3"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><rect x="9" y="3" width="6" height="11.5" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3"/></symbol>
+  <symbol id="i-mic-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><rect x="9" y="3" width="6" height="11.5" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M4 3.5l16 17"/></symbol>
+  <symbol id="i-chev-left" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4.5 7.5 12l7.5 7.5"/></symbol>
+  <symbol id="i-chev-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></symbol>
+  <symbol id="i-chev-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 9l7 7 7-7"/></symbol>
+  <symbol id="i-phone" viewBox="0 0 24 24" fill="currentColor"><path d="M6.62 10.79a15.05 15.05 0 0 0 6.59 6.59l2.2-2.2a1 1 0 0 1 1.02-.24c1.12.37 2.33.57 3.57.57a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1C10.61 21 3 13.39 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.25.2 2.45.57 3.57a1 1 0 0 1-.25 1.02l-2.2 2.2z"/></symbol>
+  <symbol id="i-person" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="8.2" r="4.4"/><path d="M3.5 22c.4-4.6 4-7.6 8.5-7.6s8.1 3 8.5 7.6z"/></symbol>
+  <symbol id="i-keypad" viewBox="0 0 24 24" fill="currentColor"><circle cx="6" cy="4.5" r="1.7"/><circle cx="12" cy="4.5" r="1.7"/><circle cx="18" cy="4.5" r="1.7"/><circle cx="6" cy="10" r="1.7"/><circle cx="12" cy="10" r="1.7"/><circle cx="18" cy="10" r="1.7"/><circle cx="6" cy="15.5" r="1.7"/><circle cx="12" cy="15.5" r="1.7"/><circle cx="18" cy="15.5" r="1.7"/><circle cx="12" cy="21" r="1.7"/></symbol>
+  <symbol id="i-speaker" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.5h3.2L12 5.5v13l-4.8-4H4z" fill="currentColor"/><path d="M15.5 9a4.2 4.2 0 0 1 0 6M18.2 6.3a8 8 0 0 1 0 11.4"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+  <symbol id="i-bubble" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4c-4.97 0-9 3.36-9 7.5 0 2.36 1.3 4.46 3.34 5.84L5.5 20.5l4.03-1.73c.8.15 1.62.23 2.47.23 4.97 0 9-3.36 9-7.5S16.97 4 12 4z"/></symbol>
+  <symbol id="i-mail" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="3" y="5.5" width="18" height="13" rx="2.5"/><path d="M3.8 7.2 12 13l8.2-5.8"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2.2"/><circle cx="9" cy="17" r="2.2"/></symbol>
+</svg>
+
+<div class="stage">
+
+  <!-- ───────────────────────── macOS ───────────────────────── -->
+  <section class="mac" aria-label="Messages for Mac">
+    <div class="mac-window">
+      <aside class="sidebar">
+        <div class="sidebar-bar">
+          <div class="traffic" aria-hidden="true"><i></i><i></i><i></i></div>
+          <button class="ghost-btn" aria-label="New message"><svg><use href="#i-compose"/></svg></button>
+        </div>
+        <label class="search">
+          <svg><use href="#i-search"/></svg>
+          <input type="search" placeholder="Search" aria-label="Search">
+        </label>
+        <nav class="convos" data-convos></nav>
+      </aside>
+
+      <main class="chat">
+        <header class="chat-bar">
+          <div class="chat-who">
+            <span class="avatar sm" data-contact-avatar></span>
+            <div class="who-text">
+              <span class="who-name" data-contact-name></span>
+              <span class="who-sub">iMessage</span>
+            </div>
+          </div>
+          <div class="chat-actions">
+            <button class="call-chip" data-call-chip hidden><svg><use href="#i-phone"/></svg><span data-call-timer>0:00</span></button>
+            <button class="ghost-btn" data-action="call-out" aria-label="FaceTime Audio"><svg><use href="#i-video"/></svg></button>
+            <button class="ghost-btn" aria-label="Details"><svg><use href="#i-info"/></svg></button>
+          </div>
+        </header>
+
+        <div class="thread" data-thread role="log" aria-live="polite"></div>
+
+        <form class="composer mac-composer" data-composer>
+          <button type="button" class="round" aria-label="Apps"><svg><use href="#i-plus"/></svg></button>
+          <div class="field">
+            <input data-input placeholder="iMessage" autocomplete="off" enterkeyhint="send" aria-label="Message">
+            <button class="send" aria-label="Send"><svg><use href="#i-arrow-up"/></svg></button>
+            <span class="mic" aria-hidden="true"><svg><use href="#i-wave"/></svg></span>
+          </div>
+        </form>
+      </main>
+
+      <!-- macOS call HUD -->
+      <div class="mac-call" data-mac-call data-state="idle" data-view="ringing">
+        <div class="mc-row">
+          <span class="mc-av"><span class="avatar md" data-contact-avatar></span></span>
+          <div class="mc-text">
+            <div class="mc-name" data-contact-name></div>
+            <div class="mc-sub"><span class="voice active-only" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span><span data-call-sub data-ringing="Incoming audio call…"></span></div>
+          </div>
+          <div class="mc-ctrls active-only">
+            <button class="mc-circle" data-action="mute" aria-label="Mute"><svg><use href="#i-mic-off"/></svg></button>
+            <button class="mc-circle red" data-action="end" aria-label="End call"><svg class="rot"><use href="#i-phone"/></svg></button>
+          </div>
+        </div>
+        <div class="mc-caption active-only" data-caption></div>
+        <div class="mc-actions ringing-only">
+          <button class="pill red" data-action="decline"><svg class="rot"><use href="#i-phone"/></svg>Decline</button>
+          <button class="pill green" data-action="accept"><svg><use href="#i-phone"/></svg>Accept</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── iPhone ───────────────────────── -->
+  <section class="ios" aria-label="Messages for iPhone">
+    <div class="phone">
+      <div class="island" data-action="restore" aria-label="Return to call">
+        <svg><use href="#i-phone"/></svg><span data-call-timer></span>
+      </div>
+
+      <div class="statusbar" aria-hidden="true">
+        <span data-clock>9:41</span>
+        <span class="sb-icons">
+          <svg width="18" height="12" viewBox="0 0 18 12" fill="currentColor"><rect x="0" y="8" width="3" height="4" rx="1"/><rect x="5" y="5.5" width="3" height="6.5" rx="1"/><rect x="10" y="3" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="12" rx="1"/></svg>
+          <svg width="16" height="12" viewBox="0 0 16 12" fill="currentColor"><path d="M8 2.3c2.3 0 4.4.9 6 2.3l1.2-1.2A10.2 10.2 0 0 0 8 .6 10.2 10.2 0 0 0 .8 3.4L2 4.6a8.6 8.6 0 0 1 6-2.3z"/><path d="M8 5.7c1.4 0 2.6.5 3.6 1.3l1.2-1.2A7 7 0 0 0 8 4a7 7 0 0 0-4.8 1.8L4.4 7c1-.8 2.2-1.3 3.6-1.3z"/><path d="M8 9c.6 0 1.1.2 1.5.6L8 11.2 6.5 9.6C6.9 9.2 7.4 9 8 9z"/></svg>
+          <svg width="27" height="13" viewBox="0 0 27 13"><rect x=".5" y=".5" width="23" height="12" rx="3.8" fill="none" stroke="currentColor" opacity=".4"/><rect x="2" y="2" width="18" height="9" rx="2.4" fill="currentColor"/><path d="M25 4.5v4c.8-.3 1.3-1.1 1.3-2s-.5-1.7-1.3-2z" fill="currentColor" opacity=".45"/></svg>
+        </span>
+      </div>
+
+      <div class="thread" data-thread role="log" aria-live="polite"></div>
+
+      <div class="ios-top">
+        <header class="ios-nav">
+          <button class="nav-back" aria-label="Back"><svg><use href="#i-chev-left"/></svg><span class="badge">1</span></button>
+          <div class="nav-contact">
+            <span class="avatar lg" data-contact-avatar></span>
+            <span class="nav-name"><span data-contact-name></span><svg><use href="#i-chev-right"/></svg></span>
+          </div>
+          <button class="nav-video" data-action="call-out" aria-label="FaceTime"><svg><use href="#i-video"/></svg></button>
+        </header>
+        <button class="call-banner" data-call-banner data-action="restore" hidden>Touch to return to call · <span data-call-timer></span></button>
+      </div>
+
+      <div class="ios-bottom">
+        <form class="composer ios-composer" data-composer>
+          <button type="button" class="round" aria-label="Apps"><svg><use href="#i-plus"/></svg></button>
+          <div class="field">
+            <input data-input placeholder="iMessage" autocomplete="off" enterkeyhint="send" aria-label="Message">
+            <button class="send" aria-label="Send"><svg><use href="#i-arrow-up"/></svg></button>
+            <span class="mic" aria-hidden="true"><svg><use href="#i-mic"/></svg></span>
+          </div>
+        </form>
+      </div>
+      <div class="home-ind" aria-hidden="true"></div>
+
+      <!-- iOS call screen -->
+      <div class="ios-call" data-ios-call data-state="idle" data-view="ringing">
+        <div class="ic-bg" aria-hidden="true"></div>
+        <button class="ic-min active-only" data-action="minimize" aria-label="Back to Messages"><svg><use href="#i-chev-down"/></svg></button>
+
+        <div class="ic-head">
+          <div class="ic-sub" data-call-sub data-ringing="mobile"></div>
+          <div class="ic-name" data-contact-name></div>
+        </div>
+        <div class="ic-avatar"><span class="avatar xl" data-contact-avatar></span></div>
+        <div class="ic-caption active-only">
+          <span class="voice" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+          <p data-caption></p>
+        </div>
+        <div class="ic-spacer"></div>
+
+        <div class="ringing-only ic-ring">
+          <div class="ic-mini">
+            <button type="button"><svg><use href="#i-clock"/></svg>Remind Me</button>
+            <button type="button" data-action="decline-text"><svg><use href="#i-bubble"/></svg>Message</button>
+          </div>
+          <div class="ic-answer">
+            <div class="ic-key"><button class="red" data-action="decline" aria-label="Decline"><svg class="rot"><use href="#i-phone"/></svg></button>Decline</div>
+            <div class="ic-key"><button class="green" data-action="accept" aria-label="Accept"><svg><use href="#i-phone"/></svg></button>Accept</div>
+          </div>
+        </div>
+
+        <div class="ic-grid active-only">
+          <div class="ic-key"><button type="button"><svg><use href="#i-speaker"/></svg></button>audio</div>
+          <div class="ic-key"><button type="button"><svg><use href="#i-video"/></svg></button>FaceTime</div>
+          <div class="ic-key"><button type="button" data-action="mute"><svg><use href="#i-mic-off"/></svg></button>mute</div>
+          <div class="ic-key"><button type="button"><svg><use href="#i-plus"/></svg></button>add</div>
+          <div class="ic-key"><button type="button" class="red" data-action="end" aria-label="End call"><svg class="rot"><use href="#i-phone"/></svg></button>end</div>
+          <div class="ic-key"><button type="button"><svg><use href="#i-keypad"/></svg></button>keypad</div>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- Shell controls (dev only) -->
+<div class="dev" data-dev>
+  <button class="dev-toggle" data-action="dev-toggle" aria-label="Shell controls"><svg><use href="#i-sliders"/></svg></button>
+  <div class="dev-panel">
+    <div class="dev-title">Shell controls</div>
+    <div class="dev-group">
+      <div class="dev-label">Agent</div>
+      <div class="dev-btns">
+        <button class="chip" data-action="dev-msg">Message</button>
+        <button class="chip" data-action="dev-typing">Typing</button>
+        <button class="chip" data-action="dev-card">Gmail link</button>
+        <button class="chip" data-action="dev-ring">Call me</button>
+      </div>
+    </div>
+    <div class="dev-group">
+      <div class="dev-label">Layout</div>
+      <div class="seg" data-seg="layout">
+        <button data-action="layout" data-value="auto">Auto</button>
+        <button data-action="layout" data-value="mac">Mac</button>
+        <button data-action="layout" data-value="iphone">iPhone</button>
+      </div>
+    </div>
+    <div class="dev-group">
+      <div class="dev-label">Appearance</div>
+      <div class="seg" data-seg="theme">
+        <button data-action="theme" data-value="auto">Auto</button>
+        <button data-action="theme" data-value="light">Light</button>
+        <button data-action="theme" data-value="dark">Dark</button>
+      </div>
+    </div>
+    <button class="chip wide" data-action="dev-reset">Restart onboarding</button>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

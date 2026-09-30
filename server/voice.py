@@ -5,6 +5,7 @@ agent knows what was said on the call (and the call knows the text thread).
 """
 from __future__ import annotations
 
+import asyncio
 import time
 
 from loguru import logger
@@ -14,7 +15,6 @@ from pipecat.frames.frames import (
     Frame,
     InterruptionFrame,
     LLMRunFrame,
-    TranscriptionFrame,
     TTSTextFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
@@ -26,6 +26,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
     UserTurnMessageAddedMessage,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.openai.realtime.events import (
     AudioConfiguration,
     AudioInput,
@@ -41,7 +42,7 @@ from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 from pipecat.workers.runner import WorkerRunner
 
-from . import calls, config, prompts
+from . import calls, config, prompts, text_agent
 from .session import Session
 
 
@@ -84,9 +85,6 @@ class CallTap(FrameProcessor):
                     s.call.caption, self._new_turn = "", False
                 s.call.caption += frame.text
                 await s.emit("caption", role="agent", text=s.call.caption.strip())
-            elif isinstance(frame, TranscriptionFrame) and frame.text.strip():
-                self._new_turn = True
-                await s.emit("caption", role="user", text=frame.text.strip())
         await self.push_frame(frame, direction)
 
 
@@ -115,7 +113,25 @@ async def run_call(session: Session, connection: SmallWebRTCConnection, generati
                 ),
             ),
         )
-        context = LLMContext([{"role": "developer", "content": prompts.voice_opening(session)}])
+        async def text_user(params: FunctionCallParams, message: str):
+            """Text the user during the call, for anything easier to read than hear.
+
+            Args:
+                message: What to send, written the way you text: casual, lowercase is fine, short lines.
+                    Put each separate text on its own line.
+            """
+            logger.info(f"[{session.id[:8]}] call  tool: text_user {message!r}")
+            for i, bubble in enumerate(text_agent.split_bubbles(message, max_bubbles=6)):
+                if i:
+                    await asyncio.sleep(0.6)
+                await session.add_message("agent", "text", bubble)
+                session.remember("assistant", bubble, "text")
+            await params.result_callback({"sent": True})
+
+        context = LLMContext(
+            [{"role": "developer", "content": prompts.voice_opening(session)}],
+            [text_user],
+        )
         user_agg, assistant_agg = LLMContextAggregatorPair(context)
 
         pipeline = Pipeline([
@@ -169,14 +185,18 @@ async def run_call(session: Session, connection: SmallWebRTCConnection, generati
         async def on_client_disconnected(_transport, _client):
             await runner.cancel()
 
+        # Captions are the agent's side only: the user's turn is finalized when the
+        # agent starts replying, so showing it would flash over the agent's caption.
         @user_agg.event_handler("on_user_turn_message_added")
         async def on_user_turn(_agg, message: UserTurnMessageAddedMessage):
+            logger.info(f"[{session.id[:8]}] call  user: {message.content}")
             session.remember("user", message.content, "voice")
 
         @assistant_agg.event_handler("on_assistant_turn_stopped")
         async def on_assistant_turn(_agg, message: AssistantTurnStoppedMessage):
+            suffix = " (interrupted)" if message.interrupted else ""
+            logger.info(f"[{session.id[:8]}] call agent: {message.content or '(nothing)'}{suffix}")
             if message.content:
-                suffix = " (interrupted)" if message.interrupted else ""
                 session.remember("assistant", message.content + suffix, "voice")
 
         await runner.run()

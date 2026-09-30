@@ -26,7 +26,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "set_agent_name",
-            "description": "Save the name the user has chosen for you. Call as soon as they give one.",
+            "description": "Save the name the user has chosen for you. Call as soon as they give one. Capitalize it like a name.",
             "parameters": {
                 "type": "object",
                 "properties": {"name": {"type": "string", "description": "The name, as the user would write it."}},
@@ -101,17 +101,54 @@ def _chat_messages(session: Session) -> list[dict]:
     msgs: list[dict] = [{"role": "system", "content": prompts.text_system(session)}]
     for t in session.history[-60:]:
         if t.role == "system":
-            msgs.append({"role": "system", "content": f"[{t.content}]"})
+            msgs.append({"role": "system", "content": f"Event: {t.content}"})
         else:
             msgs.append({"role": t.role, "content": t.content})
     return msgs
 
 
-def split_bubbles(text: str) -> list[str]:
-    parts = [p.strip() for p in re.split(r"\n\s*\n", text.strip()) if p.strip()]
-    if len(parts) > MAX_BUBBLES:
-        parts = parts[: MAX_BUBBLES - 1] + ["\n\n".join(parts[MAX_BUBBLES - 1 :])]
+# Models sometimes imitate event notes ("[Phone call ended after 1:02]", "Event: …").
+# Those must never reach the thread: they'd be the agent inventing what happened.
+_FAKE_EVENT = re.compile(r"\[[^\]]*\b(call|ended|declined|missed|event|system|note|ringing)\b[^\]]*\]|^\s*(event|note|system)\s*:.*$",
+                         re.IGNORECASE | re.MULTILINE)
+
+
+BUBBLE_CHARS = 80
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[a-z0-9\"'(])", re.IGNORECASE)
+
+
+def _chunk(paragraph: str) -> list[str]:
+    """Break a long paragraph into text-sized bubbles at sentence boundaries."""
+    if len(paragraph) <= BUBBLE_CHARS:
+        return [paragraph]
+    chunks: list[str] = []
+    for sentence in _SENTENCE_END.split(paragraph):
+        if chunks and len(chunks[-1]) + 1 + len(sentence) <= BUBBLE_CHARS:
+            chunks[-1] += " " + sentence
+        else:
+            chunks.append(sentence)
+    return chunks
+
+
+def split_bubbles(text: str, max_bubbles: int = MAX_BUBBLES) -> list[str]:
+    text = _FAKE_EVENT.sub("", text)
+    # Any line break is a new text; drop exact repeats ("calling you now!" twice).
+    paragraphs = [p.strip() for p in text.strip().splitlines() if p.strip()]
+    parts: list[str] = []
+    for chunk in (c for p in paragraphs for c in _chunk(p)):
+        if not parts or chunk.lower() != parts[-1].lower():
+            parts.append(chunk)
+    if len(parts) > max_bubbles:
+        parts = parts[: max_bubbles - 1] + ["\n".join(parts[max_bubbles - 1 :])]
     return parts
+
+
+def tidy_name(raw: str) -> str:
+    """Trim quotes/punctuation; capitalize names typed all in lowercase ("nova" → "Nova")."""
+    name = raw.strip().strip("\"'“”‘’").strip().rstrip(".!?,").strip()[:32]
+    if name and name == name.lower() and any(c.isalpha() for c in name):
+        name = " ".join(w[:1].upper() + w[1:] for w in name.split())
+    return name
 
 
 def _typing_time(text: str) -> float:
@@ -148,8 +185,13 @@ async def _reply(session: Session) -> None:
         for tc in msg.tool_calls:
             result = await _run_tool(session, tc.function.name, tc.function.arguments, after)
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+        # Tools can move the flow on (e.g. a name was just saved): re-brief the model.
+        messages[0] = {"role": "system", "content": prompts.text_system(session)}
 
     bubbles = split_bubbles(text)
+    if session.call.status == "idle" and any(getattr(fn, "rings", False) for fn in after):
+        # Placing a call: say "calling you now" and nothing that pretends it already happened.
+        bubbles = bubbles[:1]
     for i, bubble in enumerate(bubbles):
         await session.set_typing(True)
         wait = _typing_time(bubble) - (time.monotonic() - started if i == 0 else 0)
@@ -174,13 +216,22 @@ async def _run_tool(session: Session, name: str, raw_args: str, after: list) -> 
     logger.info(f"[{session.id[:8]}] tool {name} {args}")
 
     if name == "set_agent_name":
-        agent_name = str(args.get("name", "")).strip()[:32]
+        agent_name = tidy_name(str(args.get("name", "")))
         if not agent_name:
             return "error: empty name"
+        if agent_name == session.agent_name:
+            return f"that's already your name ({agent_name}); carry on"
+        first_time = session.agent_name is None
         flow.cancel_name_timer(session)
         await session.set_agent_name(agent_name)
         session.remember("system", f"The user named you {agent_name}")
-        return f"saved. you are now {agent_name}"
+        if first_time and not session.call_offer_done:
+            if agent_name == flow.DEFAULT_AGENT_NAME:
+                return (f"saved: they didn't pick, so you go by {agent_name}. In this reply, say in a few words "
+                        "that they can rename you anytime, then ask if you can give them a quick call.")
+            return (f"saved: you're {agent_name}. In this reply, react to the name in a few words, "
+                    "then ask if you can give them a quick call.")
+        return f"saved: you're {agent_name}"
 
     if name == "keep_texting":
         if not session.call_offer_done:
@@ -199,7 +250,9 @@ async def _run_tool(session: Session, name: str, raw_args: str, after: list) -> 
             await asyncio.sleep(1.0)
             await calls.ring(session)
 
+        ring_after_texting.rings = True
         after.append(ring_after_texting)
-        return "the phone will start ringing right after your message is sent"
+        return ("The phone starts ringing right after this reply. Say you're calling now in one short text "
+                "and stop there. Don't describe or imagine the call; you'll get an Event about how it went.")
 
     return f"error: unknown tool {name}"

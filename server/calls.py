@@ -170,7 +170,11 @@ async def finished(session: Session, gen: int, error: str | None = None) -> None
         await session.add_message("system", "event", f"Call dropped: {error}")
         session.remember("system", f"The call dropped after {_fmt(duration)} because {error}. Continue over text")
     elif was_active:
-        session.remember("system", f"Phone call ended after {_fmt(duration)}. Continue over text")
+        session.remember(
+            "system",
+            f"Phone call ended after {_fmt(duration)}. Continue over text from where the call left off; "
+            "anything you texted during the call is already in the thread, so don't repeat it",
+        )
     else:
         await session.add_message("system", "event", "Call couldn't connect")
         session.remember("system", "The call dropped before it connected")

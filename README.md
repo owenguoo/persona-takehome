@@ -41,6 +41,16 @@ server/
 
 `GET /api/health` shows whether the key is picked up and which models are in use.
 
+## Testing the call
+
+`scripts/voice_e2e.py` plays a caller against the running server: it texts its way
+into a call, answers, speaks (OpenAI TTS), interrupts the agent, asks to be texted
+instead, and hangs up. It prints the call timeline, the thread, and latencies:
+
+```
+uv run python scripts/voice_e2e.py
+```
+
 ## Models
 
 | Setting | Default | Used for |

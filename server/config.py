@@ -30,5 +30,5 @@ def settings() -> Settings:
         text_model=os.getenv("OPENAI_TEXT_MODEL", "gpt-4.1-mini").strip(),
         realtime_model=os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime-2.1").strip(),
         voice=os.getenv("OPENAI_VOICE", "marin").strip(),
-        name_timeout_secs=float(os.getenv("NAME_TIMEOUT_SECS", "40")),
+        name_timeout_secs=float(os.getenv("NAME_TIMEOUT_SECS", "25")),
     )

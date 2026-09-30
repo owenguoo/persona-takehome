@@ -8,7 +8,7 @@ memory afterwards, and the call knows the text thread.
 
 1. Landing page → **Chat with Persona** starts a fresh session.
 2. Persona texts first and asks what you'd like to call it.
-3. No name (you say "you pick", or go quiet for `NAME_TIMEOUT_SECS`, default 40s;
+3. No name (you say "you pick", or go quiet for `NAME_TIMEOUT_SECS`, default 25s;
    typing holds the timer off) → it goes by **Your Persona**.
 4. It offers a quick call; everything after that is open conversation.
 

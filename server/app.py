@@ -1,0 +1,115 @@
+"""HTTP + WebSocket entry point.
+
+  GET  /                 the iMessage / call UI (web/)
+  WS   /ws?sid=…         the thread: snapshot, then live events both ways
+  POST /api/offer        WebRTC offer → answer for the voice call
+  GET  /api/health       which keys/models are configured
+"""
+from __future__ import annotations
+
+import asyncio
+
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
+from loguru import logger
+from pipecat.transports.smallwebrtc.request_handler import SmallWebRTCRequest, SmallWebRTCRequestHandler
+
+from . import calls, config, text_agent, voice
+from .session import Session, store
+
+app = FastAPI(title="onboarding")
+webrtc = SmallWebRTCRequestHandler()
+
+
+@app.middleware("http")
+async def no_cache(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/api/health")
+async def health():
+    cfg = config.settings()
+    return {
+        "ok": True,
+        "openai_api_key": bool(cfg.openai_api_key),
+        "text_model": cfg.text_model,
+        "realtime_model": cfg.realtime_model,
+        "voice": cfg.voice,
+    }
+
+
+@app.post("/api/offer")
+async def offer(body: dict):
+    req = SmallWebRTCRequest.from_dict(body)
+    sid = (req.request_data or {}).get("session_id")
+    session = store.get(sid) if sid else None
+    if not session:
+        raise HTTPException(404, "unknown session")
+    if not config.settings().openai_api_key:
+        await calls.fail(session, "no_key")
+        raise HTTPException(503, "OPENAI_API_KEY is not set")
+
+    if session.call.status in ("idle", "ringing"):
+        await calls.accept(session)
+    if session.call.status != "connecting":
+        raise HTTPException(409, f"call is {session.call.status}")
+    gen = session.call.generation
+
+    async def on_connection(connection):
+        session.call.voice_task = asyncio.create_task(voice.run_call(session, connection, gen))
+
+    return await webrtc.handle_web_request(req, on_connection)
+
+
+@app.websocket("/ws")
+async def thread(ws: WebSocket, sid: str):
+    await ws.accept()
+    session, created = store.get_or_create(sid)
+    session.sockets.add(ws)
+    await ws.send_json({"type": "snapshot", "session": session.snapshot()})
+    if created:
+        session.remember("system", "The user just opened this conversation for the first time. Text them first")
+        text_agent.schedule_reply(session, delay=1.0)
+    try:
+        while True:
+            await handle(session, await ws.receive_json())
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        logger.exception("websocket error")
+    finally:
+        session.sockets.discard(ws)
+        # The call's audio lives in that page; if every page is gone, so is the call.
+        if not session.sockets:
+            await calls.hangup(session, "page closed")
+
+
+async def handle(session: Session, data: dict) -> None:
+    kind = data.get("type")
+    if kind == "user_message":
+        text = str(data.get("text", "")).strip()[:4000]
+        if text:
+            await session.add_message("user", "text", text)
+            session.remember("user", text)
+            text_agent.schedule_reply(session)
+    elif kind == "call_accept":
+        await calls.accept(session)
+    elif kind == "call_decline":
+        await calls.decline(session, text_instead=bool(data.get("text_instead")))
+    elif kind == "call_failed":
+        await calls.fail(session, str(data.get("reason", "")))
+    elif kind == "hangup":
+        await calls.hangup(session, "user")
+    # ── shell controls ──
+    elif kind == "dev_ring":
+        await calls.ring(session)
+    elif kind == "dev_nudge":
+        session.remember("system", "Send the user a short, friendly follow-up message")
+        text_agent.schedule_reply(session, delay=0.2)
+    elif kind == "dev_card":
+        await session.add_message("agent", "card", title="Connect Gmail", sub="Sign in with Google · read-only")
+
+
+app.mount("/", StaticFiles(directory=config.WEB_DIR, html=True), name="web")

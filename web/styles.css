@@ -262,12 +262,15 @@ body[data-layout="iphone"] .ios { display: flex; }
 
 /* Voice activity bars */
 .voice { display: inline-flex; gap: 3px; align-items: center; height: 16px; }
-.voice i { width: 3px; height: 100%; border-radius: 2px; background: currentColor; animation: vb 1s ease-in-out infinite; }
+.voice i { width: 3px; height: 100%; border-radius: 2px; background: currentColor; transform: scaleY(.3); transition: transform .3s; }
 .voice i:nth-child(2) { animation-delay: -.25s; }
 .voice i:nth-child(3) { animation-delay: -.5s; }
 .voice i:nth-child(4) { animation-delay: -.12s; }
 .voice i:nth-child(5) { animation-delay: -.38s; }
 @keyframes vb { 0%, 100% { transform: scaleY(.25); } 50% { transform: scaleY(1); } }
+/* Bars only move while the agent is actually talking. */
+.speaking .voice i { animation-name: vb; animation-duration: 1s; animation-timing-function: ease-in-out; animation-iteration-count: infinite; }
+[data-caption][data-role="user"] { opacity: .62; font-style: italic; }
 
 /* Composer (shared) */
 .composer { display: flex; align-items: flex-end; }

@@ -11,11 +11,12 @@
   const store = {
     get(k) { try { return localStorage.getItem(k); } catch { return null; } },
     set(k, v) { try { localStorage.setItem(k, v); } catch { /* private mode */ } },
+    del(k) { try { localStorage.removeItem(k); } catch { /* private mode */ } },
   };
   const newId = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
 
-  const UNKNOWN = '+1 (415) 555-0132';
-  const PERSON = icon('i-person');
+  const UNNAMED = 'Persona';
+  const LOGO = icon('i-persona');
   const JUMBO = /^(?:\p{Extended_Pictographic}|\p{Emoji_Modifier}|‍|️|\s){1,12}$/u;
 
   const OTHERS = [
@@ -28,7 +29,7 @@
 
   // ── state (the server is the source of truth) ────────────────
   const state = {
-    sid: store.get('onboarding.sid') || newId(),
+    sid: store.get('onboarding.sid'), // set when the user taps "Chat with Persona"
     createdAt: Date.now() / 1000,
     agentName: null,
     messages: [],
@@ -38,7 +39,6 @@
     muted: false,
     online: false,
   };
-  store.set('onboarding.sid', state.sid);
   // Identifies this page load: a call belongs to the page holding its audio.
   const pageId = newId();
   let clientSeq = 0;
@@ -108,15 +108,15 @@
     return html;
   }
 
-  const avatarInner = (name) => (name ? esc([...name][0].toUpperCase()) : PERSON);
+  const avatarInner = () => LOGO;
   const initials = (n) => n.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase();
 
   function renderContact() {
     const name = state.agentName;
-    $$('[data-contact-name]').forEach((el) => { el.textContent = name || UNKNOWN; });
+    $$('[data-contact-name]').forEach((el) => { el.textContent = name || UNNAMED; });
     $$('[data-contact-avatar]').forEach((el) => {
-      el.classList.toggle('agent', !!name);
-      el.innerHTML = avatarInner(name);
+      el.classList.add('brand');
+      el.innerHTML = avatarInner();
       if (popAvatar) { el.classList.remove('pop'); void el.offsetWidth; el.classList.add('pop'); }
     });
     popAvatar = false;
@@ -133,7 +133,7 @@
   function convoHTML({ name, prev, time, unread, agent, active }) {
     return `<button class="convo${active ? ' active' : ''}">
       ${unread ? '<span class="unread"></span>' : ''}
-      <span class="avatar md${agent && state.agentName ? ' agent' : ''}">${agent ? avatarInner(state.agentName) : esc(initials(name))}</span>
+      <span class="avatar md${agent ? ' brand' : ''}">${agent ? avatarInner() : esc(initials(name))}</span>
       <span class="convo-body">
         <span class="convo-top"><span class="convo-name">${esc(name)}</span><span class="convo-time">${esc(time)}</span></span>
         <span class="convo-prev">${esc(prev)}</span>
@@ -144,7 +144,7 @@
   function renderSidebar() {
     const last = [...state.messages].reverse().find(isBubble);
     const agentRow = {
-      name: state.agentName || UNKNOWN,
+      name: state.agentName || UNNAMED,
       prev: previewOf(last),
       time: last ? fmtTime(new Date(last.at * 1000)) : '',
       agent: true,
@@ -398,6 +398,14 @@
     });
   }
 
+  let lastTypingPing = 0;
+  function noteTyping() {
+    const now = Date.now();
+    if (now - lastTypingPing < 2000 || !ws || ws.readyState !== WebSocket.OPEN) return;
+    lastTypingPing = now;
+    ws.send(JSON.stringify({ type: 'user_typing' }));
+  }
+
   function sendText(text) {
     const clientId = `${pageId}:${++clientSeq}`;
     const id = `pending-${clientSeq}`;
@@ -431,17 +439,43 @@
   function markSeg(name, v) {
     $$(`[data-seg="${name}"] button`).forEach((b) => b.classList.toggle('on', b.dataset.value === v));
   }
-  function restart() {
+  function setView(view) {
+    document.body.dataset.view = view;
+  }
+
+  function resetState() {
     voice.stop();
-    state.sid = newId();
-    store.set('onboarding.sid', state.sid);
     Object.assign(state, { agentName: null, messages: [], typing: false, minimized: false, muted: false });
     applyCall({ status: 'idle', direction: 'incoming', started_at: null });
     render();
     const old = ws;
     ws = null;
+    outbox.length = 0;
     if (old) old.close();
-    connect();
+  }
+
+  // "Chat with Persona": a brand-new session, and Persona texts first.
+  function start() {
+    const landing = $('[data-landing]');
+    if (landing.classList.contains('leaving')) return;
+    resetState();
+    state.sid = newId();
+    store.set('onboarding.sid', state.sid);
+    state.createdAt = Date.now() / 1000;
+    landing.classList.add('leaving');
+    setTimeout(() => {
+      setView('chat');
+      landing.classList.remove('leaving');
+      render();
+      connect();
+    }, 380);
+  }
+
+  function restart() {
+    resetState();
+    state.sid = null;
+    store.del('onboarding.sid');
+    setView('landing');
   }
 
   // ── events ───────────────────────────────────────────────────
@@ -487,6 +521,7 @@
       case 'dev-card': return send({ type: 'dev_card' });
       case 'dev-ring': return send({ type: 'dev_ring' });
       case 'dev-reset': return restart();
+      case 'start': return start();
       case 'layout': return setLayout(el.dataset.value);
       case 'theme': return setTheme(el.dataset.value);
     }
@@ -495,7 +530,10 @@
   $$('[data-composer]').forEach((form) => {
     const input = $('[data-input]', form);
     const field = $('.field', form);
-    input.addEventListener('input', () => field.classList.toggle('has-text', input.value.trim().length > 0));
+    input.addEventListener('input', () => {
+      field.classList.toggle('has-text', input.value.trim().length > 0);
+      noteTyping();
+    });
     form.addEventListener('submit', (e) => {
       e.preventDefault();
       const text = input.value.trim();
@@ -531,5 +569,10 @@
 
   render();
   renderCall();
-  connect();
+  if (state.sid) {
+    setView('chat');
+    connect();
+  } else {
+    setView('landing');
+  }
 })();

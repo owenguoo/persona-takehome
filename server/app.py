@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from pipecat.transports.smallwebrtc.request_handler import SmallWebRTCRequest, SmallWebRTCRequestHandler
 
-from . import calls, config, text_agent, voice
+from . import calls, config, flow, text_agent, voice
 from .session import Session, store
 
 MAX_TEXT = 4000
@@ -75,8 +75,10 @@ async def thread(ws: WebSocket, sid: str, page: str = ""):
     session.sockets[ws] = page
     await ws.send_json({"type": "snapshot", "session": session.snapshot()})
     if created:
-        session.remember("system", "The user just opened this conversation for the first time. Text them first")
+        session.remember("system", "The user just tapped 'Chat with Persona'. Text them first")
         text_agent.schedule_reply(session, delay=1.0)
+    if not session.agent_name:
+        flow.arm_name_timer(session)
     try:
         while True:
             await handle(session, await ws.receive_json())
@@ -98,7 +100,10 @@ async def handle(session: Session, data: dict) -> None:
         if text:
             await session.add_message("user", "text", text, client_id=str(data.get("client_id", ""))[:64])
             session.remember("user", text)
+            flow.arm_name_timer(session)
             text_agent.schedule_reply(session)
+    elif kind == "user_typing":
+        flow.touch(session)
     elif kind == "call_accept":
         await calls.accept(session, str(data.get("page", "")) or None)
     elif kind == "call_decline":

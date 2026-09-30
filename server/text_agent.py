@@ -15,7 +15,7 @@ from loguru import logger
 import openai
 from openai import AsyncOpenAI
 
-from . import config, prompts
+from . import config, flow, prompts
 from .session import Session
 
 MAX_TOOL_ROUNDS = 4
@@ -32,6 +32,14 @@ TOOLS = [
                 "properties": {"name": {"type": "string", "description": "The name, as the user would write it."}},
                 "required": ["name"],
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "keep_texting",
+            "description": "The user would rather not have a call right now; carry on over text.",
+            "parameters": {"type": "object", "properties": {}},
         },
     },
     {
@@ -150,6 +158,7 @@ async def _reply(session: Session) -> None:
         await session.set_typing(False)
         await session.add_message("agent", "text", bubble)
         session.remember("assistant", bubble)
+        flow.arm_name_timer(session)
         if i < len(bubbles) - 1:
             await asyncio.sleep(0.35)
 
@@ -168,9 +177,17 @@ async def _run_tool(session: Session, name: str, raw_args: str, after: list) -> 
         agent_name = str(args.get("name", "")).strip()[:32]
         if not agent_name:
             return "error: empty name"
+        flow.cancel_name_timer(session)
         await session.set_agent_name(agent_name)
         session.remember("system", f"The user named you {agent_name}")
         return f"saved. you are now {agent_name}"
+
+    if name == "keep_texting":
+        if not session.call_offer_done:
+            session.call_offer_done = True
+            session.changed()
+            session.remember("system", "The user would rather text than call for now")
+        return "ok, staying on text"
 
     if name == "call_user":
         from . import calls  # avoid an import cycle

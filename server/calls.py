@@ -23,6 +23,12 @@ def _fmt(secs: float) -> str:
     return f"{s // 60}:{s % 60:02d}"
 
 
+def _offer_done(session: Session) -> None:
+    if not session.call_offer_done:
+        session.call_offer_done = True
+        session.changed()
+
+
 def _cancel(task: asyncio.Task | None) -> None:
     if task and not task.done() and task is not asyncio.current_task():
         task.cancel()
@@ -35,6 +41,7 @@ async def ring(session: Session) -> bool:
         return False
     c.generation += 1
     c.status, c.direction, c.started_at, c.caption = "ringing", "incoming", None, ""
+    _offer_done(session)
     session.remember("system", "You started ringing the user's phone")
     await session.emit_call()
     c.ring_task = asyncio.create_task(_ring_timeout(session, c.generation))
@@ -53,6 +60,7 @@ async def accept(session: Session, page: str | None = None) -> None:
     if c.status == "ringing":
         _cancel(c.ring_task)
     elif c.status == "idle":
+        _offer_done(session)
         c.generation += 1
         c.direction, c.caption = "outgoing", ""
         session.remember("system", "The user started calling you")

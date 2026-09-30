@@ -61,6 +61,8 @@ class Session:
         self.id = sid
         self.created_at = time.time()
         self.agent_name: str | None = None
+        self.call_offer_done = False  # a call happened, or the user said they'd rather text
+        self.name_timer: asyncio.Task | None = None
         self.messages: list[Message] = []
         self.history: list[Turn] = []
         self.call = Call()
@@ -157,6 +159,7 @@ class Session:
             "id": self.id,
             "created_at": self.created_at,
             "agent_name": self.agent_name,
+            "call_offer_done": self.call_offer_done,
             "messages": [asdict(m) for m in self.messages],
             "history": [asdict(t) for t in self.history],
         }
@@ -166,6 +169,7 @@ class Session:
         s = cls(data["id"])
         s.created_at = data["created_at"]
         s.agent_name = data.get("agent_name")
+        s.call_offer_done = bool(data.get("call_offer_done", False))
         s.messages = [Message(**m) for m in data.get("messages", [])]
         s.history = [Turn(**t) for t in data.get("history", [])]
         s._ids = itertools.count(max((m.id for m in s.messages), default=0) + 1)

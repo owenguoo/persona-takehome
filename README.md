@@ -4,15 +4,26 @@ An iMessage-style onboarding that can turn into a phone call. Text and voice
 share one session, so whatever is said on the call is in the text agent's
 memory afterwards, and the call knows the text thread.
 
+## Flow
+
+1. Landing page → **Chat with Persona** starts a fresh session.
+2. Persona texts first and asks what you'd like to call it.
+3. No name (you say "you pick", or go quiet for `NAME_TIMEOUT_SECS`, default 40s;
+   typing holds the timer off) → it goes by **Your Persona**.
+4. It offers a quick call; everything after that is open conversation.
+
+The steps live in `server/flow.py`; the models only handle the wording.
+
 ```
-web/        iMessage + call UI (Mac and iPhone layouts, no build step)
+web/        landing page + iMessage/call UI (Mac and iPhone layouts, no build step)
 server/
   app.py         FastAPI: static UI, /ws thread socket, /api/offer WebRTC
   session.py     one session per visitor: thread, model history, call state
+  flow.py        onboarding steps: name (with default) → call offer → open chat
   text_agent.py  iMessage replies (OpenAI chat + tools)
   calls.py       call lifecycle: ring / accept / decline / missed / hang up
   voice.py       Pipecat pipeline: WebRTC ⇄ OpenAI Realtime speech-to-speech
-  prompts.py     persona + channel style (placeholder onboarding logic)
+  prompts.py     Persona's voice, per step and per channel
 ```
 
 ## Run

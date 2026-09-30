@@ -104,12 +104,13 @@ async def fail(session: Session, reason: str) -> None:
     _cancel(c.connect_task)
     c.status = "idle"
     await session.emit_call()
-    why = {
-        "mic": "their microphone is blocked",
-        "timeout": "it never connected",
-        "no_key": "voice isn't configured yet",
-    }.get(reason, "of a connection problem")
-    await session.add_message("system", "event", f"Call couldn't connect: {why}")
+    # (what the user sees, what the agent is told)
+    shown, why = {
+        "mic": ("Call couldn't connect: microphone access is blocked", "their microphone is blocked"),
+        "timeout": ("Call couldn't connect", "it never connected"),
+        "no_key": ("Call couldn't connect: voice isn't set up yet", "voice isn't configured yet"),
+    }.get(reason, ("Call couldn't connect", "of a connection problem"))
+    await session.add_message("system", "event", shown)
     session.remember("system", f"The call couldn't connect because {why}")
     text_agent.schedule_reply(session, delay=1.0)
 

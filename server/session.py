@@ -7,8 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import json
+import os
+import re
 import time
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import WebSocket
@@ -49,6 +53,7 @@ class Call:
     voice_task: asyncio.Task | None = None
     hangup: Any = None  # async callable set by the voice pipeline
     caption: str = ""
+    owner: str | None = None  # page id holding the call's audio
 
 
 class Session:
@@ -60,9 +65,14 @@ class Session:
         self.history: list[Turn] = []
         self.call = Call()
         self.typing = False
-        self.sockets: set[WebSocket] = set()
+        self.sockets: dict[WebSocket, str] = {}  # socket → page id
         self.reply_task: asyncio.Task | None = None
         self._ids = itertools.count(1)
+        self._save_handle: asyncio.TimerHandle | None = None
+        self.on_change = None  # set by the store: persists the session
+
+    def has_page(self, page: str) -> bool:
+        return page in self.sockets.values()
 
     # ── outbound ────────────────────────────────────────────────
     async def emit(self, type: str, **data: Any) -> None:
@@ -74,7 +84,7 @@ class Session:
             except Exception:
                 dead.append(ws)
         for ws in dead:
-            self.sockets.discard(ws)
+            self.sockets.pop(ws, None)
 
     def call_json(self) -> dict[str, Any]:
         c = self.call
@@ -91,11 +101,23 @@ class Session:
         }
 
     # ── thread ──────────────────────────────────────────────────
+    def changed(self) -> None:
+        if self.on_change:
+            self.on_change(self)
+
     async def add_message(self, sender: Sender, kind: Kind = "text", text: str = "", **meta: Any) -> Message:
         msg = Message(id=next(self._ids), sender=sender, kind=kind, text=text, meta=meta)
         self.messages.append(msg)
+        self.changed()
         await self.emit("message", message=asdict(msg))
         return msg
+
+    async def add_notice(self, text: str) -> None:
+        """A system note in the thread, skipped if it would repeat the last item verbatim."""
+        last = self.messages[-1] if self.messages else None
+        if last and last.kind == "event" and last.text == text:
+            return
+        await self.add_message("system", "event", text)
 
     async def set_typing(self, on: bool) -> None:
         if self.typing != on:
@@ -108,10 +130,12 @@ class Session:
         for m in changed:
             m.read_at = now
         if changed:
+            self.changed()
             await self.emit("read", ids=[m.id for m in changed], at=now)
 
     async def set_agent_name(self, name: str) -> None:
         self.agent_name = name
+        self.changed()
         await self.emit("contact", agent_name=name)
         await self.add_message("system", "event", f"Contact saved as {name}", emphasis=name)
 
@@ -123,22 +147,99 @@ class Session:
         content = content.strip()
         if content:
             self.history.append(Turn(role, content, channel))
+            self.changed()
             logger.debug(f"[{self.id[:8]}] {channel}/{role}: {content}")
 
 
+    # ── persistence ─────────────────────────────────────────────
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "created_at": self.created_at,
+            "agent_name": self.agent_name,
+            "messages": [asdict(m) for m in self.messages],
+            "history": [asdict(t) for t in self.history],
+        }
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> Session:
+        s = cls(data["id"])
+        s.created_at = data["created_at"]
+        s.agent_name = data.get("agent_name")
+        s.messages = [Message(**m) for m in data.get("messages", [])]
+        s.history = [Turn(**t) for t in data.get("history", [])]
+        s._ids = itertools.count(max((m.id for m in s.messages), default=0) + 1)
+        return s
+
+
+SID_RE = re.compile(r"^[A-Za-z0-9-]{8,64}$")
+
+
 class SessionStore:
-    def __init__(self):
+    """In-memory sessions, mirrored to one JSON file each so restarts keep conversations.
+
+    Call state is deliberately not saved: a call can't survive a server restart.
+    """
+
+    def __init__(self, directory: Path):
+        self._dir = directory
         self._sessions: dict[str, Session] = {}
 
+    @staticmethod
+    def valid(sid: str) -> bool:
+        return bool(SID_RE.match(sid or ""))
+
+    def _path(self, sid: str) -> Path:
+        return self._dir / f"{sid}.json"
+
     def get(self, sid: str) -> Session | None:
-        return self._sessions.get(sid)
+        if not self.valid(sid):
+            return None
+        s = self._sessions.get(sid)
+        if s is None and self._path(sid).exists():
+            s = self._load(sid)
+        return s
 
     def get_or_create(self, sid: str) -> tuple[Session, bool]:
-        s = self._sessions.get(sid)
+        if not self.valid(sid):
+            raise ValueError("bad session id")
+        s = self.get(sid)
         if s:
             return s, False
-        s = self._sessions[sid] = Session(sid)
+        s = self._track(Session(sid))
+        self._write(s)
         return s, True
 
+    def _load(self, sid: str) -> Session | None:
+        try:
+            s = Session.from_json(json.loads(self._path(sid).read_text()))
+        except Exception:
+            logger.exception(f"couldn't load session {sid}")
+            return None
+        return self._track(s)
 
-store = SessionStore()
+    def _track(self, s: Session) -> Session:
+        s.on_change = self._schedule_save
+        self._sessions[s.id] = s
+        return s
+
+    def _schedule_save(self, s: Session) -> None:
+        # Coalesce bursts of changes into one write.
+        if s._save_handle is None:
+            s._save_handle = asyncio.get_running_loop().call_later(0.25, self._flush, s)
+
+    def _flush(self, s: Session) -> None:
+        s._save_handle = None
+        self._write(s)
+
+    def _write(self, s: Session) -> None:
+        try:
+            self._dir.mkdir(parents=True, exist_ok=True)
+            tmp = self._path(s.id).with_suffix(".tmp")
+            tmp.write_text(json.dumps(s.to_json()))
+            os.replace(tmp, self._path(s.id))
+        except Exception:
+            logger.exception(f"couldn't save session {s.id}")
+
+
+store = SessionStore(Path(__file__).resolve().parent.parent / ".data" / "sessions")

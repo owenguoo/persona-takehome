@@ -79,7 +79,7 @@ async def _reply_after(session: Session, delay: float) -> None:
 def _describe(e: Exception) -> str:
     code = getattr(e, "code", None) or ""
     if isinstance(e, openai.AuthenticationError):
-        return "OpenAI rejected the API key. Check OPENAI_API_KEY in onboarding/.env"
+        return "OpenAI rejected the API key. Check OPENAI_API_KEY in .env"
     if isinstance(e, openai.NotFoundError) or code == "model_not_found":
         return f"model {config.settings().text_model} isn't available on this key. Set OPENAI_TEXT_MODEL"
     if isinstance(e, openai.RateLimitError):
@@ -113,9 +113,7 @@ def _typing_time(text: str) -> float:
 async def _reply(session: Session) -> None:
     cfg = config.settings()
     if not cfg.openai_api_key:
-        await session.add_message(
-            "system", "event", "No OPENAI_API_KEY yet. Add it to onboarding/.env and send another message."
-        )
+        await session.add_notice("No OPENAI_API_KEY yet. Add it to .env and send another message.")
         return
 
     await session.mark_read()

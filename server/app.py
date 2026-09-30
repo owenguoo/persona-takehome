@@ -17,6 +17,8 @@ from pipecat.transports.smallwebrtc.request_handler import SmallWebRTCRequest, S
 from . import calls, config, text_agent, voice
 from .session import Session, store
 
+MAX_TEXT = 4000
+
 app = FastAPI(title="onboarding")
 webrtc = SmallWebRTCRequestHandler()
 
@@ -52,7 +54,7 @@ async def offer(body: dict):
         raise HTTPException(503, "OPENAI_API_KEY is not set")
 
     if session.call.status in ("idle", "ringing"):
-        await calls.accept(session)
+        await calls.accept(session, (req.request_data or {}).get("page"))
     if session.call.status != "connecting":
         raise HTTPException(409, f"call is {session.call.status}")
     gen = session.call.generation
@@ -64,10 +66,13 @@ async def offer(body: dict):
 
 
 @app.websocket("/ws")
-async def thread(ws: WebSocket, sid: str):
+async def thread(ws: WebSocket, sid: str, page: str = ""):
+    if not store.valid(sid):
+        await ws.close(code=4400, reason="bad session id")
+        return
     await ws.accept()
     session, created = store.get_or_create(sid)
-    session.sockets.add(ws)
+    session.sockets[ws] = page
     await ws.send_json({"type": "snapshot", "session": session.snapshot()})
     if created:
         session.remember("system", "The user just opened this conversation for the first time. Text them first")
@@ -80,22 +85,22 @@ async def thread(ws: WebSocket, sid: str):
     except Exception:
         logger.exception("websocket error")
     finally:
-        session.sockets.discard(ws)
-        # The call's audio lives in that page; if every page is gone, so is the call.
-        if not session.sockets:
-            await calls.hangup(session, "page closed")
+        session.sockets.pop(ws, None)
+        # The call's audio lives in the page that answered it.
+        if session.call.owner == page and not session.has_page(page):
+            asyncio.create_task(calls.owner_left(session, page))
 
 
 async def handle(session: Session, data: dict) -> None:
     kind = data.get("type")
     if kind == "user_message":
-        text = str(data.get("text", "")).strip()[:4000]
+        text = str(data.get("text", "")).strip()[:MAX_TEXT]
         if text:
-            await session.add_message("user", "text", text)
+            await session.add_message("user", "text", text, client_id=str(data.get("client_id", ""))[:64])
             session.remember("user", text)
             text_agent.schedule_reply(session)
     elif kind == "call_accept":
-        await calls.accept(session)
+        await calls.accept(session, str(data.get("page", "")) or None)
     elif kind == "call_decline":
         await calls.decline(session, text_instead=bool(data.get("text_instead")))
     elif kind == "call_failed":

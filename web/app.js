@@ -39,6 +39,9 @@
     online: false,
   };
   store.set('onboarding.sid', state.sid);
+  // Identifies this page load: a call belongs to the page holding its audio.
+  const pageId = newId();
+  let clientSeq = 0;
 
   const fresh = new Set();
   let popAvatar = false;
@@ -97,7 +100,9 @@
         m.kind === 'typing' && 'typing', fresh.has(m.id) && 'enter'].filter(Boolean).join(' ');
       html += `<div class="${cls}">${bubbleHTML(m)}</div>`;
       if (m === lastReal && m.sender === 'user') {
-        html += `<div class="receipt">${m.read_at ? `<b>Read</b> ${fmtTime(new Date(m.read_at * 1000))}` : 'Delivered'}</div>`;
+        const r = m.pending ? (state.online ? 'Sending…' : 'Waiting for connection…')
+          : m.read_at ? `<b>Read</b> ${fmtTime(new Date(m.read_at * 1000))}` : 'Delivered';
+        html += `<div class="receipt">${r}</div>`;
       }
     });
     return html;
@@ -172,19 +177,19 @@
 
   function connect() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const sock = new WebSocket(`${proto}://${location.host}/ws?sid=${encodeURIComponent(state.sid)}`);
+    const sock = new WebSocket(`${proto}://${location.host}/ws?sid=${encodeURIComponent(state.sid)}&page=${pageId}`);
     ws = sock;
     sock.onopen = () => {
       retry = 0;
       state.online = true;
-      renderContact();
+      render();
       while (outbox.length) sock.send(JSON.stringify(outbox.shift()));
     };
     sock.onmessage = (e) => onEvent(JSON.parse(e.data));
     sock.onclose = () => {
       if (ws !== sock) return; // replaced on purpose (restart)
       state.online = false;
-      renderContact();
+      render();
       setTimeout(connect, Math.min(5000, 400 * 2 ** retry++));
     };
   }
@@ -195,16 +200,21 @@
         const s = ev.session;
         state.createdAt = s.created_at;
         state.agentName = s.agent_name;
-        state.messages = s.messages;
+        // Keep bubbles we've sent that the server hasn't echoed yet.
+        const known = new Set(s.messages.map((m) => m.meta && m.meta.client_id).filter(Boolean));
+        state.messages = [...s.messages, ...state.messages.filter((m) => m.pending && !known.has(m.meta.client_id))];
         state.typing = s.typing;
         applyCall(s.call);
         render();
         return;
       }
-      case 'message':
-        state.messages.push(ev.message);
-        fresh.add(ev.message.id);
+      case 'message': {
+        const cid = ev.message.meta && ev.message.meta.client_id;
+        const i = cid ? state.messages.findIndex((m) => m.pending && m.meta.client_id === cid) : -1;
+        if (i >= 0) state.messages[i] = ev.message; // our optimistic bubble, now confirmed
+        else { state.messages.push(ev.message); fresh.add(ev.message.id); }
         return render();
+      }
       case 'typing':
         state.typing = ev.on;
         if (ev.on) fresh.add('typing');
@@ -341,7 +351,7 @@
           body: JSON.stringify({
             sdp: pc.localDescription.sdp,
             type: pc.localDescription.type,
-            request_data: { session_id: state.sid },
+            request_data: { session_id: state.sid, page: pageId },
           }),
         });
         if (!res.ok) {
@@ -388,9 +398,21 @@
     });
   }
 
+  function sendText(text) {
+    const clientId = `${pageId}:${++clientSeq}`;
+    const id = `pending-${clientSeq}`;
+    state.messages.push({
+      id, sender: 'user', kind: 'text', text, pending: true,
+      meta: { client_id: clientId }, at: Date.now() / 1000, read_at: null,
+    });
+    fresh.add(id);
+    render();
+    send({ type: 'user_message', text, client_id: clientId });
+  }
+
   function startCall() {
     state.muted = false;
-    send({ type: 'call_accept' });
+    send({ type: 'call_accept', page: pageId });
     voice.start();
   }
 
@@ -480,7 +502,7 @@
       if (!text) return;
       input.value = '';
       field.classList.remove('has-text');
-      send({ type: 'user_message', text });
+      sendText(text);
     });
   });
 

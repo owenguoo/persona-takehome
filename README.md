@@ -17,14 +17,14 @@ server/
 
 ## Run
 
-1. Put your key in `onboarding/.env`:
+1. Copy `.env.example` to `.env` and put your key in it:
    ```
    OPENAI_API_KEY=sk-...
    ```
    It's re-read on every request, so no restart needed.
-2. From the repo root:
+2. Start the server:
    ```
-   uv run --directory onboarding python -m server
+   uv run python -m server
    ```
 3. Open http://localhost:5173 in Chrome or Safari. The call needs microphone access.
 

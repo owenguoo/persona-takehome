@@ -1,4 +1,4 @@
-"""Runtime settings, read from onboarding/.env.
+"""Runtime settings, read from .env at the repo root.
 
 Re-read on every call so a key pasted into .env works without a restart.
 """

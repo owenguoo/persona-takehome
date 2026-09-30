@@ -47,7 +47,7 @@ async def _ring_timeout(session: Session, gen: int) -> None:
         await _not_answered(session, "missed", "The user didn't pick up the call")
 
 
-async def accept(session: Session) -> None:
+async def accept(session: Session, page: str | None = None) -> None:
     """The user answered, or tapped call themselves. Audio arrives via /api/offer."""
     c = session.call
     if c.status == "ringing":
@@ -58,7 +58,7 @@ async def accept(session: Session) -> None:
         session.remember("system", "The user started calling you")
     else:
         return
-    c.status = "connecting"
+    c.status, c.owner = "connecting", page
     await session.emit_call()
     _cancel(c.connect_task)
     c.connect_task = asyncio.create_task(_connect_timeout(session, c.generation))
@@ -117,6 +117,21 @@ async def connected(session: Session) -> None:
     await session.emit_call()
 
 
+PAGE_GRACE_SECS = 4
+
+
+async def owner_left(session: Session, page: str) -> None:
+    """The page holding the call's audio disconnected. Give it a moment to come back
+    (a network blip) before treating it as gone (tab closed or reloaded)."""
+    c = session.call
+    if c.owner != page or c.status not in ("connecting", "active"):
+        return
+    gen = c.generation
+    await asyncio.sleep(PAGE_GRACE_SECS)
+    if c.generation == gen and c.owner == page and not session.has_page(page):
+        await hangup(session, "page closed")
+
+
 async def hangup(session: Session, reason: str = "user") -> None:
     """End a live call from our side (user tapped end, or their page went away)."""
     c = session.call
@@ -139,7 +154,7 @@ async def finished(session: Session, gen: int, error: str | None = None) -> None
     was_active = c.status == "active"
     _cancel(c.connect_task)
     duration = time.time() - (c.started_at or time.time())
-    c.status, c.hangup, c.caption = "idle", None, ""
+    c.status, c.hangup, c.caption, c.owner = "idle", None, "", None
     await session.emit_call()
     if was_active:
         await session.add_message("agent", "call", status="ended", duration=duration)

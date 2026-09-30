@@ -11,7 +11,7 @@ import time
 
 from loguru import logger
 
-from . import text_agent
+from . import extract, text_agent
 from .session import Session
 
 RING_TIMEOUT_SECS = 25
@@ -163,6 +163,7 @@ async def finished(session: Session, gen: int, error: str | None = None) -> None
     was_active = c.status == "active"
     _cancel(c.connect_task)
     duration = time.time() - (c.started_at or time.time())
+    c_started = c.started_at
     c.status, c.hangup, c.caption, c.owner = "idle", None, "", None
     await session.emit_call()
     if was_active:
@@ -171,11 +172,16 @@ async def finished(session: Session, gen: int, error: str | None = None) -> None
         await session.add_message("system", "event", f"Call dropped: {error}")
         session.remember("system", f"The call dropped after {_fmt(duration)} because {error}. Continue over text")
     elif was_active:
-        note = (f"Phone call ended after {_fmt(duration)}. Continue over text from where the call left off; "
-                "anything you texted during the call is already in the thread, so don't repeat it")
-        if not session.user_name:
-            note += ". If they said their name on the call, save it with set_user_name first"
-        session.remember("system", note)
+        if not session.user_name:  # they may have said it on the call
+            said = [t.content for t in session.history if t.role == "user" and t.channel == "voice" and t.at >= (c_started or 0)]
+            found = await extract.user_name(session, said)
+            if found:
+                session.set_user_name(text_agent.tidy_name(found))
+        session.remember(
+            "system",
+            f"Phone call ended after {_fmt(duration)}. Continue over text from where the call left off; "
+            "anything you texted during the call is already in the thread, so don't repeat it",
+        )
     else:
         await session.add_message("system", "event", "Call couldn't connect")
         session.remember("system", "The call dropped before it connected")

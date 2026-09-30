@@ -25,6 +25,8 @@ QUIET_SECS = 3.0
 async def main():
     sid = str(uuid.uuid4())
     replies: list[list[str]] = [[]]
+    sources: list[str] = []
+    tags: dict[str, str] = {}
     last_activity = time.monotonic()
     typing = False
 
@@ -40,7 +42,10 @@ async def main():
                     m = ev["message"]
                     last_activity = time.monotonic()
                     if m["sender"] == "agent" and m["kind"] == "text":
+                        src = m["meta"].get("line", "custom")
                         replies[-1].append(m["text"])
+                        sources.append(src)
+                        tags[m["text"]] = src
                     elif m["kind"] == "event":
                         replies[-1].append(f"· {m['text']}")
                 elif ev["type"] == "call" and ev["call"]["status"] == "ringing":
@@ -59,7 +64,7 @@ async def main():
             await ws.send(json.dumps({"type": "user_message", "text": line, "client_id": uuid.uuid4().hex}))
             await settle()
             for b in replies[-1]:
-                print(f"     {b}" if b.startswith("·") else f"AI   {b}")
+                print(f"     {b}" if b.startswith("·") else f"AI   {b}   [{tags.get(b, '?')}]")
         rt.cancel()
 
     # replies[0] is the opener
@@ -74,6 +79,7 @@ async def main():
         "avg_bubbles_per_reply": round(statistics.mean(b for b, _ in stats), 2),
         "avg_words_per_reply": round(statistics.mean(w for _, w in stats), 1),
         "max_words_in_a_reply": max(w for _, w in stats),
+        "bubbles_from_approved_lines": f"{sum(s != 'custom' for s in sources)}/{len(sources)}",
     }, indent=2))
 
 

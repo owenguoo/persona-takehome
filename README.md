@@ -12,7 +12,10 @@ memory afterwards, and the call knows the text thread.
    typing holds the timer off) → it goes by **Your Persona**.
 4. It offers a quick call; everything after that is open conversation.
 
-The steps live in `server/flow.py`; the models only handle the wording.
+The steps live in `server/flow.py`. Key beats use approved lines from
+`server/lines.py`: each reply is a list of parts, either a line (sent word for
+word) or the model's own words when the moment needs them, and every bubble
+records which it was. The opener skips the model entirely.
 
 ```
 web/        landing page + iMessage/call UI (Mac and iPhone layouts, no build step)
@@ -20,6 +23,8 @@ server/
   app.py         FastAPI: static UI, /ws thread socket, /api/offer WebRTC
   session.py     one session per visitor: thread, model history, call state
   flow.py        onboarding steps: name (with default) → call offer → open chat
+  lines.py       approved lines: exact wording for the key beats (edit copy here)
+  extract.py     listens for facts (the user's name) separately from the chat model
   text_agent.py  iMessage replies (OpenAI chat + tools)
   calls.py       call lifecycle: ring / accept / decline / missed / hang up
   voice.py       Pipecat pipeline: WebRTC ⇄ OpenAI Realtime speech-to-speech

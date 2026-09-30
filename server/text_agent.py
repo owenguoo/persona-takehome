@@ -15,11 +15,41 @@ from loguru import logger
 import openai
 from openai import AsyncOpenAI
 
-from . import config, flow, prompts
+from . import config, extract, flow, lines, prompts
 from .session import Session
 
 MAX_TOOL_ROUNDS = 4
-MAX_BUBBLES = 3
+MAX_BUBBLES = 3        # for one piece of the model's own text
+MAX_REPLY_BUBBLES = 4  # for a whole reply
+
+# Every reply is an ordered list of parts: an approved line (sent word for word)
+# or the model's own text.
+REPLY_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "reply",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["messages"],
+            "properties": {
+                "messages": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["kind", "value"],
+                        "properties": {
+                            "kind": {"type": "string", "enum": ["line", "text"]},
+                            "value": {"type": "string"},
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
 
 TOOLS = [
     {
@@ -164,6 +194,107 @@ def tidy_name(raw: str) -> str:
     return name
 
 
+_ITEM = re.compile(r'"kind"\s*:\s*"(line|text)"\s*,\s*"value"\s*:\s*"((?:[^"\\]|\\.)*)"')
+
+
+def _parse_items(session: Session, content: str) -> list[dict]:
+    """The model's reply parts. Raw JSON must never reach the thread."""
+    text = content.strip()
+    try:
+        # raw_decode reads the first object and ignores the rest: the model
+        # occasionally repeats the whole object twice.
+        obj, _ = json.JSONDecoder(strict=False).raw_decode(text)
+        return list(obj["messages"])
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        pass
+    if not text.startswith("{"):
+        return [{"kind": "text", "value": text}]  # plain words, not JSON at all
+    items = [{"kind": k, "value": json.loads(f'"{v}"')} for k, v in _ITEM.findall(text)]
+    logger.warning(f"[{session.id[:8]}] malformed reply JSON, salvaged {len(items)} part(s): {text[:200]!r}")
+    return items
+
+
+_CONTROL = re.compile(r"[\x00-\x09\x0b-\x1f\x7f]")
+
+
+def _norm(text: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9 ]", " ", text.lower()).split())
+
+
+def _match_line(session: Session, value: str) -> str | None:
+    """A line id, from either the id itself or the line's wording (models mix them up)."""
+    avail = lines.available(session)
+    if value in avail:
+        return value
+    want = _norm(value)
+    for key, text in avail.items():
+        if want and (want == _norm(text) or want in {_norm(b) for b in text.split("\n")}):
+            return key
+    return None
+
+
+def plan_reply(session: Session, content: str) -> list[tuple[str, str]]:
+    """Expand the model's reply into (bubble, source) pairs; source is a line id or "custom"."""
+    items = _parse_items(session, content)
+    out: list[tuple[str, str]] = []
+    for item in items:
+        value = _CONTROL.sub("", str(item.get("value", ""))).strip()
+        if item.get("kind") == "line":
+            key = _match_line(session, value)
+            if key is None:
+                logger.warning(f"[{session.id[:8]}] model picked unavailable line {value!r}")
+                if " " in value:  # it wrote words, not an id: keep them as its own text
+                    out += [(b, "custom") for b in split_bubbles(value)]
+                continue
+            text = lines.render(key, session) or ""
+            out += [(b.strip(), key) for b in text.split("\n") if b.strip()]
+        else:
+            # Typed a line's wording out by hand? Count it as that line.
+            known = {b.strip().lower(): k for k, t in lines.available(session).items() for b in t.split("\n")}
+            out += [(b, known.get(b.strip().lower(), "custom")) for b in split_bubbles(value)]
+    deduped: list[tuple[str, str]] = []
+    for bubble, src in out:
+        if not deduped or bubble.lower() != deduped[-1][0].lower():
+            deduped.append((bubble, src))
+    return deduped[:MAX_REPLY_BUBBLES]
+
+
+async def _send(session: Session, bubbles: list[tuple[str, str]], started: float | None = None) -> None:
+    """Send bubbles with a human typing rhythm; the first one absorbs time already spent thinking."""
+    for i, (bubble, src) in enumerate(bubbles):
+        await session.set_typing(True)
+        spent = time.monotonic() - started if (i == 0 and started) else 0
+        wait = _typing_time(bubble) - spent
+        if wait > 0:
+            await asyncio.sleep(wait)
+        await session.set_typing(False)
+        await session.add_message("agent", "text", bubble, line=src)
+        session.remember("assistant", bubble)
+        flow.arm_name_timer(session)
+        if i < len(bubbles) - 1:
+            await asyncio.sleep(0.35)
+
+
+def schedule_line(session: Session, key: str, delay: float = 0.9) -> None:
+    """Send an approved line directly, without the model (e.g. the opener)."""
+    if session.reply_task and not session.reply_task.done():
+        session.reply_task.cancel()
+
+    async def run():
+        try:
+            await asyncio.sleep(delay)
+            text = lines.render(key, session)
+            if text:
+                await _send(session, [(b, key) for b in text.split("\n") if b.strip()])
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if session.reply_task is asyncio.current_task():
+                await session.set_typing(False)
+
+    session.reply_task = asyncio.create_task(run())
+
+
 def _typing_time(text: str) -> float:
     return min(2.4, 0.6 + len(text) * 0.028)
 
@@ -178,21 +309,28 @@ async def _reply(session: Session) -> None:
     await session.set_typing(True)
     started = time.monotonic()
 
+    if not session.user_name:  # listen for their name before replying, so the reply can use it
+        said, asked = extract.since_last_reply(session)
+        found = await extract.user_name(session, said, asked)
+        if found and session.set_user_name(tidy_name(found)):
+            logger.info(f"[{session.id[:8]}] heard the user's name: {session.user_name}")
+
     client = _openai(cfg.openai_api_key)
     messages = _chat_messages(session)
     after: list[Callable[[], Awaitable[None]]] = []
-    text = ""
+    content = ""
 
     for _ in range(MAX_TOOL_ROUNDS):
         resp = await client.chat.completions.create(
             model=cfg.text_model,
             messages=messages,
             tools=TOOLS,
+            response_format=REPLY_FORMAT,
             temperature=0.8,
         )
         msg = resp.choices[0].message
         if not msg.tool_calls:
-            text = msg.content or ""
+            content = msg.content or ""
             break
         messages.append(msg.model_dump(exclude_none=True))
         for tc in msg.tool_calls:
@@ -201,21 +339,13 @@ async def _reply(session: Session) -> None:
         # Tools can move the flow on (e.g. a name was just saved): re-brief the model.
         messages[0] = {"role": "system", "content": prompts.text_system(session)}
 
-    bubbles = split_bubbles(text)
+    bubbles = plan_reply(session, content)
     if session.call.status == "idle" and any(getattr(fn, "rings", False) for fn in after):
         # Placing a call: say "calling you now" and nothing that pretends it already happened.
-        bubbles = bubbles[:1]
-    for i, bubble in enumerate(bubbles):
-        await session.set_typing(True)
-        wait = _typing_time(bubble) - (time.monotonic() - started if i == 0 else 0)
-        if wait > 0:
-            await asyncio.sleep(wait)
-        await session.set_typing(False)
-        await session.add_message("agent", "text", bubble)
-        session.remember("assistant", bubble)
-        flow.arm_name_timer(session)
-        if i < len(bubbles) - 1:
-            await asyncio.sleep(0.35)
+        calling = [b for b in bubbles if b[1] == "calling_now"]
+        bubbles = calling or [(lines.render("calling_now", session) or "calling you now", "calling_now")]
+    logger.info(f"[{session.id[:8]}] reply: " + ", ".join(src for _, src in bubbles))
+    await _send(session, bubbles, started)
 
     for fn in after:
         await fn()
@@ -240,23 +370,22 @@ async def _run_tool(session: Session, name: str, raw_args: str, after: list) -> 
         session.remember("system", f"The user named you {agent_name}")
         if first_time and not session.call_offer_done:
             if agent_name == flow.DEFAULT_AGENT_NAME:
-                return (f"saved: they didn't pick, so you go by {agent_name}. In this reply, say in a few words "
-                        "that they can rename you anytime, then ask if you can give them a quick call.")
-            return (f"saved: you're {agent_name}. In this reply, react to the name in two to four words, "
-                    "then ask if you can give them a quick call.")
-        return f"saved: you're {agent_name}"
+                return f"saved: you go by {agent_name}. Reply with the default_named line."
+            return f"saved: you're {agent_name}. Reply with the named line (it reacts and offers the call)."
+        return f"saved: you're {agent_name}. The renamed line fits."
 
     if name == "set_user_name":
         user_name = tidy_name(str(args.get("name", "")))
         session.set_user_name(user_name)
-        return f"saved: the user is {user_name}" if user_name else "error: empty name"
+        return (f"saved: the user is {user_name}. The nice_to_meet line fits." if user_name
+                else "error: empty name")
 
     if name == "keep_texting":
         if not session.call_offer_done:
             session.call_offer_done = True
             session.changed()
             session.remember("system", "The user would rather text than call for now")
-        return "ok, staying on text"
+        return "ok, staying on text. The keep_texting line fits."
 
     if name == "call_user":
         from . import calls  # avoid an import cycle
@@ -270,7 +399,7 @@ async def _run_tool(session: Session, name: str, raw_args: str, after: list) -> 
 
         ring_after_texting.rings = True
         after.append(ring_after_texting)
-        return ("The phone starts ringing right after this reply. Say you're calling now in one short text "
-                "and stop there. Don't describe or imagine the call; you'll get an Event about how it went.")
+        return ("The phone starts ringing right after this reply. Reply with just the calling_now line. "
+                "Don't describe or imagine the call; you'll get an Event about how it went.")
 
     return f"error: unknown tool {name}"

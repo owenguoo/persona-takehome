@@ -75,8 +75,7 @@ async def thread(ws: WebSocket, sid: str, page: str = ""):
     session.sockets[ws] = page
     await ws.send_json({"type": "snapshot", "session": session.snapshot()})
     if created:
-        session.remember("system", "The user just tapped 'Chat with Persona'. Text them first")
-        text_agent.schedule_reply(session, delay=1.0)
+        text_agent.schedule_line(session, "opener", delay=1.0)  # instant and identical every time
     if not session.agent_name:
         flow.arm_name_timer(session)
     try:

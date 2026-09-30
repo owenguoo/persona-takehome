@@ -1,6 +1,7 @@
 """Prompts. The flow (flow.py) decides where we are; these tell the models how to sound there."""
 from __future__ import annotations
 
+from . import lines
 from .flow import DEFAULT_AGENT_NAME
 from .session import Session
 
@@ -17,7 +18,8 @@ BREVITY = """Be brief. Say the one thing that matters, then stop.
 - Tools are invisible: never say you're saving, setting or noting something. Just carry on talking."""
 
 OPEN_GOALS = """Now just get to know them, conversationally (never as a form, never as a list):
-- one thing at a time: first their name, then what they could use a hand with day to day.
+- one thing at a time: first their name (ask_user_name), then what they could use a hand with (ask_help).
+- Once you know their name, nice_to_meet fits.
 - Don't offer another call unless they ask for one."""
 
 TEXT_STYLE = """You are texting over iMessage.
@@ -51,16 +53,27 @@ def _user_line(s: Session) -> str:
 def _text_step(s: Session) -> str:
     if not s.agent_name:
         return f"""Right now: the user hasn't named you yet. That's the only thing to get at this step.
-- If you haven't said anything yet, send two short texts in your own words: a warm hello introducing yourself as their new Persona, then ask what they want to name you. The hello is just a hello: no taglines about what you do. Make it unmistakable that the name is for you, the assistant (e.g. "what do you want to call me?"). Don't ask for their name yet.
+- (Your opener already asked what they want to call you. If somehow you haven't said anything yet, start with a warm hello and that question.)
 - The moment they give you a name, call set_agent_name with it. Odd or silly names are fine: go with them.
-- If it looks like a keyboard mash or an accident rather than a name (e.g. "asdfjkl"), check playfully before saving it.
+- If it looks like a keyboard mash or an accident rather than a name, use check_mash before saving anything.
 - If they don't want to pick, tell you to choose, or brush it off, call set_agent_name with "{DEFAULT_AGENT_NAME}".
-- If they say something else, answer in a line, then end your reply by coming back to what they'd like to call you."""
+- If they say something else, answer in a line of your own, then ask_agent_name."""
     if not s.call_offer_done:
-        return """Right now: you've just got your name. React to it in a few words, then ask if you can give them a quick call to get to know each other (it's faster than texting).
-- Only on a clear yes (or if they ask you to call) call call_user and tell them you're calling now (keep it simple). Anything unclear (an emoji, "maybe", a change of subject) is not a yes: ask again lightly or carry on.
-- If they'd rather not, call keep_texting and carry on over text without pushing."""
+        return """Right now: you've got your name and are offering a quick call.
+- Only on a clear yes (or if they ask you to call): call call_user, then calling_now.
+- Anything unclear (an emoji, "maybe", a change of subject) is not a yes: answer it, and ask again lightly or carry on.
+- If they'd rather not: call keep_texting, then the keep_texting line and your next question, and don't push."""
     return OPEN_GOALS
+
+
+REPLY_FORMAT = """How to reply: a JSON list of messages, in order. Each is either
+  {"kind": "line", "value": "<line id>"}  to send one of the lines below word for word, or
+  {"kind": "text", "value": "<your own words>"}.
+Prefer a line whenever it says what you'd say. After a line that only acknowledges something \
+(keep_texting, after_decline, after_missed, call_failed), keep the conversation moving with the next \
+question for where you are, e.g. ask_user_name or ask_help. Write your own only when the moment needs something \
+the lines don't cover (answering their question, reacting to something specific); you can mix, \
+e.g. your own one-line answer and then a line. An empty list sends nothing."""
 
 
 def text_system(s: Session) -> str:
@@ -71,8 +84,10 @@ def text_system(s: Session) -> str:
         _text_step(s),
         BREVITY,
         TEXT_STYLE,
+        REPLY_FORMAT,
+        "Lines you can use right now:\n" + lines.catalog(s),
         "Names: set_agent_name is only for YOUR name (including renames like \"actually call you Nova\"). "
-        "When they tell you THEIR name (\"i'm owen\"), including earlier on a call, save it with set_user_name.",
+        "Their own name (\"i'm owen\") is saved for you automatically: never use set_agent_name for it.",
     ])
 
 

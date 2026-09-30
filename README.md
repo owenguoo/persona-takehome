@@ -41,7 +41,16 @@ server/
 
 `GET /api/health` shows whether the key is picked up and which models are in use.
 
-## Testing the call
+## Testing
+
+`scripts/text_e2e.py` runs a fixed six-message conversation through the running
+server and reports words and bubbles per reply, to keep an eye on verbosity:
+
+```
+uv run python scripts/text_e2e.py
+```
+
+### The call
 
 `scripts/voice_e2e.py` plays a caller against the running server: it texts its way
 into a call, answers, speaks (OpenAI TTS), interrupts the agent, asks to be texted

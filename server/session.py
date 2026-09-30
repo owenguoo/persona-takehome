@@ -61,6 +61,7 @@ class Session:
         self.id = sid
         self.created_at = time.time()
         self.agent_name: str | None = None
+        self.user_name: str | None = None
         self.call_offer_done = False  # a call happened, or the user said they'd rather text
         self.name_timer: asyncio.Task | None = None
         self.messages: list[Message] = []
@@ -141,6 +142,14 @@ class Session:
         await self.emit("contact", agent_name=name)
         await self.add_message("system", "event", f"Contact saved as {name}", emphasis=name)
 
+    def set_user_name(self, name: str) -> bool:
+        if not name or name == self.user_name:
+            return False
+        self.user_name = name
+        self.changed()
+        self.remember("system", f"The user's name is {name}")
+        return True
+
     async def emit_call(self) -> None:
         await self.emit("call", call=self.call_json())
 
@@ -159,6 +168,7 @@ class Session:
             "id": self.id,
             "created_at": self.created_at,
             "agent_name": self.agent_name,
+            "user_name": self.user_name,
             "call_offer_done": self.call_offer_done,
             "messages": [asdict(m) for m in self.messages],
             "history": [asdict(t) for t in self.history],
@@ -169,6 +179,7 @@ class Session:
         s = cls(data["id"])
         s.created_at = data["created_at"]
         s.agent_name = data.get("agent_name")
+        s.user_name = data.get("user_name")
         s.call_offer_done = bool(data.get("call_offer_done", False))
         s.messages = [Message(**m) for m in data.get("messages", [])]
         s.history = [Turn(**t) for t in data.get("history", [])]

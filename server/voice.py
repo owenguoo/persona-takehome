@@ -130,6 +130,9 @@ async def run_call(session: Session, connection: SmallWebRTCConnection, generati
 
         context = LLMContext(
             [{"role": "developer", "content": prompts.voice_opening(session)}],
+            # Only text_user: on a realtime call every tool call splits the agent's turn
+            # around a pause, so anything that can wait (like saving the user's name)
+            # is left to the text agent, which sees the call transcript afterwards.
             [text_user],
         )
         user_agg, assistant_agg = LLMContextAggregatorPair(context)

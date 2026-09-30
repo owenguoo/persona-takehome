@@ -26,10 +26,23 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "set_agent_name",
-            "description": "Save the name the user has chosen for you. Call as soon as they give one. Capitalize it like a name.",
+            "description": "Save the name the user has chosen for YOU, the assistant (never the user's own name). "
+                           "Call as soon as they give one, or when they rename you. Capitalize it like a name.",
             "parameters": {
                 "type": "object",
                 "properties": {"name": {"type": "string", "description": "The name, as the user would write it."}},
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_user_name",
+            "description": "Save the USER's own name once they tell you (e.g. \"i'm owen\").",
+            "parameters": {
+                "type": "object",
+                "properties": {"name": {"type": "string", "description": "Their name, capitalized."}},
                 "required": ["name"],
             },
         },
@@ -229,9 +242,14 @@ async def _run_tool(session: Session, name: str, raw_args: str, after: list) -> 
             if agent_name == flow.DEFAULT_AGENT_NAME:
                 return (f"saved: they didn't pick, so you go by {agent_name}. In this reply, say in a few words "
                         "that they can rename you anytime, then ask if you can give them a quick call.")
-            return (f"saved: you're {agent_name}. In this reply, react to the name in a few words, "
+            return (f"saved: you're {agent_name}. In this reply, react to the name in two to four words, "
                     "then ask if you can give them a quick call.")
         return f"saved: you're {agent_name}"
+
+    if name == "set_user_name":
+        user_name = tidy_name(str(args.get("name", "")))
+        session.set_user_name(user_name)
+        return f"saved: the user is {user_name}" if user_name else "error: empty name"
 
     if name == "keep_texting":
         if not session.call_offer_done:

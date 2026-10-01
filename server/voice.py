@@ -27,6 +27,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.llm_service import FunctionCallParams
+from pipecat.services.openai.realtime import events
 from pipecat.services.openai.realtime.events import (
     AudioConfiguration,
     AudioInput,
@@ -42,7 +43,7 @@ from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 from pipecat.workers.runner import WorkerRunner
 
-from . import calls, config, prompts, text_agent
+from . import calls, config, mail, prompts, text_agent
 from .session import Session
 
 
@@ -76,9 +77,11 @@ class CallTap(FrameProcessor):
         if direction == FrameDirection.DOWNSTREAM and self._live():
             s = self._session
             if isinstance(frame, BotStartedSpeakingFrame):
+                s.call.speaking = True
                 await s.emit("speaking", on=True)
             elif isinstance(frame, (BotStoppedSpeakingFrame, InterruptionFrame)):
                 self._new_turn = True
+                s.call.speaking = False
                 await s.emit("speaking", on=False)
             elif isinstance(frame, TTSTextFrame):
                 if self._new_turn:
@@ -128,12 +131,42 @@ async def run_call(session: Session, connection: SmallWebRTCConnection, generati
                 session.remember("assistant", bubble, "text")
             await params.result_callback({"sent": True})
 
+        async def send_gmail_link(params: FunctionCallParams):
+            """Text the user a link card to connect their Gmail, once they've agreed."""
+            if not mail.connected(session):
+                await mail.send_link(session)
+            await params.result_callback({"sent": True})
+
+        async def inbox_overview(params: FunctionCallParams):
+            """Their connected inbox at a glance: counts, top senders, the most recent emails."""
+            await params.result_callback(mail.overview(session))
+
+        async def read_inbox(params: FunctionCallParams):
+            """Read every email in their inbox in full: for to-dos, what's urgent, deadlines."""
+            await params.result_callback(mail.read_all(session))
+
+        async def search_inbox(params: FunctionCallParams, query: str):
+            """Find emails mentioning specific words (not for judgment questions like to-dos).
+
+            Args:
+                query: Words to look for in the sender, subject or body.
+            """
+            await params.result_callback(mail.search(session, query))
+
+        async def read_email(params: FunctionCallParams, id: int):
+            """Read one email in full.
+
+            Args:
+                id: The email id from inbox_overview or search_inbox.
+            """
+            await params.result_callback(mail.read(session, int(id)))
+
         context = LLMContext(
             [{"role": "developer", "content": prompts.voice_opening(session)}],
             # Only text_user: on a realtime call every tool call splits the agent's turn
             # around a pause, so anything that can wait (like saving the user's name)
             # is left to the text agent, which sees the call transcript afterwards.
-            [text_user],
+            [text_user, send_gmail_link, inbox_overview, read_inbox, search_inbox, read_email],
         )
         user_agg, assistant_agg = LLMContextAggregatorPair(context)
 
@@ -161,6 +194,36 @@ async def run_call(session: Session, connection: SmallWebRTCConnection, generati
                 pass
 
         session.call.hangup = hangup
+
+        async def inject(note: str):
+            """Tell the live call something that just happened (e.g. Gmail connected).
+
+            Pipecat's realtime service doesn't implement LLMMessagesAppendFrame yet, so this
+            adds the conversation item directly and asks for a response, once the agent
+            isn't mid-sentence (a response can't start while one is active).
+            """
+            for _ in range(50):
+                if not session.call.speaking:
+                    break
+                await asyncio.sleep(0.2)
+            if session.call.generation != generation or session.call.status != "active":
+                return
+            logger.info(f"[{session.id[:8]}] call  note: {note}")
+            await llm.send_client_event(events.ConversationItemCreateEvent(item=events.ConversationItem(
+                type="message", role="system", content=[events.ItemContent(type="input_text", text=note)])))
+            await llm._create_response()
+
+        session.call.inject = inject
+
+        async def note(text: str):
+            """Add context to the live call without prompting a reply."""
+            if session.call.generation != generation or session.call.status != "active":
+                return
+            logger.info(f"[{session.id[:8]}] call  context: {text}")
+            await llm.send_client_event(events.ConversationItemCreateEvent(item=events.ConversationItem(
+                type="message", role="system", content=[events.ItemContent(type="input_text", text=text)])))
+
+        session.call.note = note
 
         recent_errors: list[float] = []
 

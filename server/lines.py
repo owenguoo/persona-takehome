@@ -9,6 +9,7 @@ is not offered.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from .session import Session
@@ -18,6 +19,35 @@ from .session import Session
 class Line:
     text: str
     when: str
+    show: Callable[[Session], bool] | None = None  # only offered when this is true
+
+
+def _after(outcome: str):
+    return lambda s: s.call_outcome == outcome
+
+
+def _gmail_status(s: Session) -> str:
+    return (s.mail or {}).get("status", "none")
+
+
+def _gmail_open(s: Session) -> bool:
+    return _gmail_status(s) != "connected"
+
+
+def _gmail_link_out(s: Session) -> bool:
+    return _gmail_open(s) and bool((s.mail or {}).get("link_sent"))
+
+
+def _gmail_offerable(s: Session) -> bool:
+    return bool(s.help_need) and _gmail_status(s) == "none"
+
+
+def _need_unknown(s: Session) -> bool:
+    return not s.help_need
+
+
+def _user_unknown(s: Session) -> bool:
+    return not s.user_name
 
 
 LINES: dict[str, Line] = {
@@ -58,19 +88,23 @@ LINES: dict[str, Line] = {
     "after_decline": Line(
         "no worries, we can keep going here",
         "They declined your call.",
+        _after("declined"),
     ),
     "after_missed": Line(
         "tried calling, no stress. we can keep going here",
         "They didn't pick up.",
+        _after("missed"),
     ),
     "call_failed": Line(
         "hm, the call didn't go through. we can keep going here",
         "The call couldn't connect.",
+        _after("failed"),
     ),
     # ── getting to know them ──
     "ask_user_name": Line(
         "what's your name, by the way?",
         "You don't know their name yet.",
+        _user_unknown,
     ),
     "nice_to_meet": Line(
         "nice to meet you, {user_name}",
@@ -78,7 +112,23 @@ LINES: dict[str, Line] = {
     ),
     "ask_help": Line(
         "what's one thing you'd love off your plate this week?",
-        "You know their name but not what they need help with.",
+        "You don't know yet what they need help with.",
+        _need_unknown,
+    ),
+    # ── gmail ──
+    "gmail_offer": Line(
+        "want to connect your gmail? easier to show you than tell you",
+        "You know what they need help with and Gmail isn't connected yet.",
+        _gmail_offerable,
+    ),
+    "gmail_link_sent": Line(
+        "tap that and i'll take a look",
+        "Right after you call send_gmail_link.",
+        _gmail_link_out,
+    ),
+    "gmail_declined": Line(
+        "no problem, we can do that later",
+        "They don't want to connect Gmail right now.",
     ),
 }
 
@@ -95,6 +145,8 @@ def available(s: Session) -> dict[str, str]:
     out = {}
     for key, line in LINES.items():
         if key == "opener":
+            continue
+        if line.show and not line.show(s):
             continue
         needed = _PLACEHOLDER.findall(line.text)
         if all(vals.get(n) for n in needed):

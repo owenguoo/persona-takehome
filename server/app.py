@@ -8,13 +8,14 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from pipecat.transports.smallwebrtc.request_handler import SmallWebRTCRequest, SmallWebRTCRequestHandler
 
-from . import calls, config, flow, text_agent, voice
+from . import calls, config, flow, mail, text_agent, voice
 from .session import Session, store
 
 MAX_TEXT = 4000
@@ -99,9 +100,11 @@ async def handle(session: Session, data: dict) -> None:
         if text:
             await session.add_message("user", "text", text, client_id=str(data.get("client_id", ""))[:64])
             session.remember("user", text)
+            flow.user_spoke(session)
             flow.arm_name_timer(session)
             text_agent.schedule_reply(session)
     elif kind == "user_typing":
+        session.user_typing_at = time.time()
         flow.touch(session)
     elif kind == "call_accept":
         await calls.accept(session, str(data.get("page", "")) or None)
@@ -118,7 +121,63 @@ async def handle(session: Session, data: dict) -> None:
         session.remember("system", "Send the user a short, friendly follow-up message")
         text_agent.schedule_reply(session, delay=0.2)
     elif kind == "dev_card":
-        await session.add_message("agent", "card", title="Connect Gmail", sub="Sign in with Google · read-only")
+        await mail.send_link(session)
+
+
+# ── simulated Gmail ───────────────────────────────────────────────
+def _session(sid: str | None) -> Session:
+    s = store.get(sid or "")
+    if not s:
+        raise HTTPException(404, "unknown session")
+    return s
+
+
+def _inbox_json(s: Session) -> dict:
+    st = mail.state(s)
+    return {"status": st["status"], "account": mail.account(s),
+            "agent_name": s.agent_name or "Persona", "emails": mail.sorted_emails(s)}
+
+
+@app.get("/api/mail/inbox")
+async def mail_inbox(sid: str):
+    return _inbox_json(_session(sid))
+
+
+@app.post("/api/mail/connect")
+async def mail_connect(body: dict):
+    s = _session(body.get("sid"))
+    await mail.connect(s)
+    return _inbox_json(s)
+
+
+@app.post("/api/mail/reset")
+async def mail_reset(body: dict):
+    s = _session(body.get("sid"))
+    mail.load_default(s)
+    return _inbox_json(s)
+
+
+@app.post("/api/mail/emails")
+async def mail_add(body: dict):
+    s = _session(body.get("sid"))
+    # Like Gmail push (users.watch → Pub/Sub): the agent learns about it, as context only.
+    return mail.add(s, {**(body.get("email") or {}), "unread": True})
+
+
+@app.patch("/api/mail/emails/{email_id}")
+async def mail_update(email_id: int, body: dict):
+    s = _session(body.get("sid"))
+    email = mail.update(s, email_id, body.get("email") or {})
+    if not email:
+        raise HTTPException(404, "no such email")
+    return email
+
+
+@app.delete("/api/mail/emails/{email_id}")
+async def mail_delete(email_id: int, sid: str):
+    if not mail.delete(_session(sid), email_id):
+        raise HTTPException(404, "no such email")
+    return {"ok": True}
 
 
 app.mount("/", StaticFiles(directory=config.WEB_DIR, html=True), name="web")

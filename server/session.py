@@ -54,6 +54,9 @@ class Call:
     hangup: Any = None  # async callable set by the voice pipeline
     caption: str = ""
     owner: str | None = None  # page id holding the call's audio
+    note: Any = None  # async callable: add silent context to the live call (no reply)
+    speaking: bool = False  # the agent is talking right now
+    inject: Any = None  # async callable: tell the live call something (set by the voice pipeline)
 
 
 class Session:
@@ -62,7 +65,10 @@ class Session:
         self.created_at = time.time()
         self.agent_name: str | None = None
         self.user_name: str | None = None
+        self.help_need: str | None = None  # what they want a hand with, in their words
+        self.mail: dict[str, Any] = {}  # sandbox Gmail (see mail.py)
         self.call_offer_done = False  # a call happened, or the user said they'd rather text
+        self.call_outcome: str | None = None  # "declined" | "missed" | "failed", until the agent has replied
         self.name_timer: asyncio.Task | None = None
         self.messages: list[Message] = []
         self.history: list[Turn] = []
@@ -70,6 +76,10 @@ class Session:
         self.typing = False
         self.sockets: dict[WebSocket, str] = {}  # socket → page id
         self.reply_task: asyncio.Task | None = None
+        self.line_task: asyncio.Task | None = None  # a scripted line being sent (e.g. the opener)
+        self.stall_task: asyncio.Task | None = None  # checks, after each agent turn, whether things stalled
+        self.user_typing_at = 0.0
+        self.nudges_since_user = 0  # double texts sent since the user last spoke
         self._ids = itertools.count(1)
         self._save_handle: asyncio.TimerHandle | None = None
         self.on_change = None  # set by the store: persists the session
@@ -150,6 +160,14 @@ class Session:
         self.remember("system", f"The user's name is {name}")
         return True
 
+    def set_help_need(self, need: str) -> bool:
+        if not need or need == self.help_need:
+            return False
+        self.help_need = need
+        self.changed()
+        self.remember("system", f"They want help with: {need}")
+        return True
+
     async def emit_call(self) -> None:
         await self.emit("call", call=self.call_json())
 
@@ -169,6 +187,8 @@ class Session:
             "created_at": self.created_at,
             "agent_name": self.agent_name,
             "user_name": self.user_name,
+            "help_need": self.help_need,
+            "mail": self.mail,
             "call_offer_done": self.call_offer_done,
             "messages": [asdict(m) for m in self.messages],
             "history": [asdict(t) for t in self.history],
@@ -180,6 +200,8 @@ class Session:
         s.created_at = data["created_at"]
         s.agent_name = data.get("agent_name")
         s.user_name = data.get("user_name")
+        s.help_need = data.get("help_need")
+        s.mail = data.get("mail") or {}
         s.call_offer_done = bool(data.get("call_offer_done", False))
         s.messages = [Message(**m) for m in data.get("messages", [])]
         s.history = [Turn(**t) for t in data.get("history", [])]

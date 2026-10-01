@@ -1,7 +1,7 @@
 """Prompts. The flow (flow.py) decides where we are; these tell the models how to sound there."""
 from __future__ import annotations
 
-from . import lines
+from . import lines, mail
 from .flow import DEFAULT_AGENT_NAME
 from .session import Session
 
@@ -18,12 +18,20 @@ BREVITY = """Be brief. Say the one thing that matters, then stop.
 - Tools are invisible: never say you're saving, setting or noting something. Just carry on talking."""
 
 OPEN_GOALS = """Now just get to know them, conversationally (never as a form, never as a list):
-- one thing at a time: first their name (ask_user_name), then what they could use a hand with (ask_help).
+- one thing at a time: first their name (ask_user_name), then what they could use a hand with (ask_help), \
+then connecting their Gmail so you can actually help (gmail_offer).
 - Once you know their name, nice_to_meet fits.
-- Don't offer another call unless they ask for one."""
+- Gmail: on a yes, call send_gmail_link (then gmail_link_sent). On a no, call decline_gmail (then gmail_declined) \
+and don't bring it up again unless they do.
+- Once Gmail is connected, be concretely useful, tied to what they need. For anything that needs judgment \
+(to-dos, what's urgent, deadlines) use read_inbox and decide from the actual content; search_inbox only finds \
+specific words. Only ever mention emails the tools return; never invent one.
+- Don't offer another call. But if they ASK you to call, always do it (call_user, then calling_now), \
+even if they said earlier they'd rather text."""
 
 TEXT_STYLE = """You are texting over iMessage.
-- Write like a person texting: short, casual, lowercase is fine. No markdown, no bullet lists, no headings.
+- Write like a person texting: short, casual, lowercase is fine. No markdown, no headings, and no lists \
+unless they ask for one (then a short numbered list, one item per line, in a single message).
 - Usually one message. Two only if the second adds something new. Each under about 12 words.
 - Put a line break between separate messages.
 - Emoji sparingly.
@@ -50,17 +58,36 @@ def _user_line(s: Session) -> str:
     return f"The user's name is {s.user_name}." if s.user_name else "You don't know the user's name yet."
 
 
+def _help_line(s: Session) -> str:
+    return f"They want help with: {s.help_need}." if s.help_need else "You don't know yet what they need help with."
+
+
+def _mail_line(s: Session) -> str:
+    status = (s.mail or {}).get("status", "none")
+    if status == "connected":
+        line = "Gmail: connected. Use the inbox tools for its current contents."
+        recent = mail.recent_activity(s)
+        if recent:
+            line += ("\nRecent inbox activity, as background context only: never message them just to report it, "
+                     "but use it when it's relevant (e.g. they ask what's new, or what they've dealt with):\n- "
+                     + "\n- ".join(recent))
+        return line
+    if status == "declined":
+        return "Gmail: they'd rather not connect it for now."
+    return "Gmail: not connected yet."
+
+
 def _text_step(s: Session) -> str:
     if not s.agent_name:
         return f"""Right now: the user hasn't named you yet. That's the only thing to get at this step.
 - (Your opener already asked what they want to call you. If somehow you haven't said anything yet, start with a warm hello and that question.)
-- The moment they give you a name, call set_agent_name with it. Odd or silly names are fine: go with them.
+- Their answer is saved for you automatically. Odd or silly names are fine: go with them.
 - If it looks like a keyboard mash or an accident rather than a name, use check_mash before saving anything.
-- If they don't want to pick, tell you to choose, or brush it off, call set_agent_name with "{DEFAULT_AGENT_NAME}".
 - If they say something else, answer in a line of your own, then ask_agent_name."""
     if not s.call_offer_done:
         return """Right now: you've got your name and are offering a quick call.
-- Only on a clear yes (or if they ask you to call): call call_user, then calling_now.
+- Only on a clear yes to the CALL (or if they ask you to call): call call_user, then calling_now. \
+A "sure" answering some other question you asked is not a yes to a call.
 - Anything unclear (an emoji, "maybe", a change of subject) is not a yes: answer it, and ask again lightly or carry on.
 - If they'd rather not: call keep_texting, then the keep_texting line and your next question, and don't push."""
     return OPEN_GOALS
@@ -81,13 +108,16 @@ def text_system(s: Session) -> str:
         PERSONA,
         _name_line(s),
         _user_line(s),
+        _help_line(s),
+        _mail_line(s),
         _text_step(s),
         BREVITY,
         TEXT_STYLE,
         REPLY_FORMAT,
         "Lines you can use right now:\n" + lines.catalog(s),
         "Names: set_agent_name is only for YOUR name (including renames like \"actually call you Nova\"). "
-        "Their own name (\"i'm owen\") is saved for you automatically: never use set_agent_name for it.",
+        "Names, their name and what they need are noted for you automatically from what they say. "
+        "set_agent_name is only for renaming you later (\"actually call you juno\"); never for their own name.",
     ])
 
 
@@ -102,9 +132,13 @@ def voice_system(s: Session) -> str:
         PERSONA,
         _name_line(s),
         _user_line(s),
+        _help_line(s),
+        _mail_line(s),
         OPEN_GOALS,
         BREVITY,
         VOICE_STYLE,
+        "On the call, send_gmail_link texts them the connect link: tell them you've texted it and to tap it. "
+        "You'll be told the moment it connects.",
         f"Here is the conversation so far, mostly over text:\n{transcript}",
     ])
 

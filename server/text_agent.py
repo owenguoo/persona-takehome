@@ -15,7 +15,7 @@ from loguru import logger
 import openai
 from openai import AsyncOpenAI
 
-from . import config, extract, flow, lines, prompts
+from . import config, extract, flow, lines, mail, prompts
 from .session import Session
 
 MAX_TOOL_ROUNDS = 4
@@ -88,6 +88,64 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "send_gmail_link",
+            "description": "Text the user a link card to connect their Gmail. Only once they've agreed.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "decline_gmail",
+            "description": "The user doesn't want to connect Gmail right now.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "inbox_overview",
+            "description": "Their connected inbox at a glance: counts, top senders, the 10 most recent emails.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_inbox",
+            "description": "Read every email in their connected inbox in full. Use it for anything that needs "
+                           "judgment across the inbox: to-dos, what's urgent, deadlines, who's waiting on them.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_inbox",
+            "description": "Find emails mentioning specific words (a sender, a company, a topic). "
+                           "Not for judgment questions like to-dos: use read_inbox for those.",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_email",
+            "description": "Read one email in full, by id from inbox_overview or search_inbox.",
+            "parameters": {
+                "type": "object",
+                "properties": {"id": {"type": "integer"}},
+                "required": ["id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "call_user",
             "description": "Ring the user's phone for a quick voice call. Only when they've agreed to (or asked for) a call.",
             "parameters": {"type": "object", "properties": {}},
@@ -116,6 +174,8 @@ def schedule_reply(session: Session, delay: float = 0.9) -> None:
 async def _reply_after(session: Session, delay: float) -> None:
     try:
         await asyncio.sleep(delay)
+        if session.line_task and not session.line_task.done():
+            await asyncio.shield(session.line_task)  # let a scripted line finish first
         await _reply(session)
     except asyncio.CancelledError:
         pass
@@ -160,9 +220,12 @@ BUBBLE_CHARS = 80
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[a-z0-9\"'(])", re.IGNORECASE)
 
 
+_LIST_ITEM = re.compile(r"^(\d+[.)]|[-•*])\s+")
+
+
 def _chunk(paragraph: str) -> list[str]:
     """Break a long paragraph into text-sized bubbles at sentence boundaries."""
-    if len(paragraph) <= BUBBLE_CHARS:
+    if len(paragraph) <= BUBBLE_CHARS or "\n" in paragraph:  # lists stay whole
         return [paragraph]
     chunks: list[str] = []
     for sentence in _SENTENCE_END.split(paragraph):
@@ -175,8 +238,15 @@ def _chunk(paragraph: str) -> list[str]:
 
 def split_bubbles(text: str, max_bubbles: int = MAX_BUBBLES) -> list[str]:
     text = _FAKE_EVENT.sub("", text)
-    # Any line break is a new text; drop exact repeats ("calling you now!" twice).
-    paragraphs = [p.strip() for p in text.strip().splitlines() if p.strip()]
+    # Any line break is a new text, except a list (and its intro line) stays one message.
+    # Drop exact repeats ("calling you now!" twice).
+    paragraphs: list[str] = []
+    for line in (ln.strip() for ln in text.strip().splitlines() if ln.strip()):
+        if _LIST_ITEM.match(line) and paragraphs and (
+                _LIST_ITEM.match(paragraphs[-1].splitlines()[-1]) or paragraphs[-1].endswith(":")):
+            paragraphs[-1] += "\n" + line
+        else:
+            paragraphs.append(line)
     parts: list[str] = []
     for chunk in (c for p in paragraphs for c in _chunk(p)):
         if not parts or chunk.lower() != parts[-1].lower():
@@ -254,8 +324,15 @@ def plan_reply(session: Session, content: str) -> list[tuple[str, str]]:
             out += [(b, known.get(b.strip().lower(), "custom")) for b in split_bubbles(value)]
     deduped: list[tuple[str, str]] = []
     for bubble, src in out:
-        if not deduped or bubble.lower() != deduped[-1][0].lower():
-            deduped.append((bubble, src))
+        prev = deduped[-1] if deduped else None
+        if prev and bubble.lower() == prev[0].lower():
+            continue
+        # The model often sends each list item as its own part: keep a list in one message.
+        if (prev and src == prev[1] == "custom" and _LIST_ITEM.match(bubble)
+                and (_LIST_ITEM.match(prev[0].splitlines()[-1]) or prev[0].endswith(":"))):
+            deduped[-1] = (prev[0] + "\n" + bubble, "custom")
+            continue
+        deduped.append((bubble, src))
     return deduped[:MAX_REPLY_BUBBLES]
 
 
@@ -276,23 +353,20 @@ async def _send(session: Session, bubbles: list[tuple[str, str]], started: float
 
 
 def schedule_line(session: Session, key: str, delay: float = 0.9) -> None:
-    """Send an approved line directly, without the model (e.g. the opener)."""
-    if session.reply_task and not session.reply_task.done():
-        session.reply_task.cancel()
+    """Send an approved line directly, without the model (e.g. the opener).
 
+    It can't be cancelled by the user texting: replies wait for it instead, so a
+    fast "nova" never lands before "what do you want to call me?" has been asked.
+    """
     async def run():
-        try:
-            await asyncio.sleep(delay)
-            text = lines.render(key, session)
-            if text:
-                await _send(session, [(b, key) for b in text.split("\n") if b.strip()])
-        except asyncio.CancelledError:
-            pass
-        finally:
-            if session.reply_task is asyncio.current_task():
-                await session.set_typing(False)
+        await asyncio.sleep(delay)
+        text = lines.render(key, session)
+        if text:
+            await _send(session, [(b, key) for b in text.split("\n") if b.strip()])
+        await session.set_typing(False)
+        flow.after_agent_turn(session)
 
-    session.reply_task = asyncio.create_task(run())
+    session.line_task = asyncio.create_task(run())
 
 
 def _typing_time(text: str) -> float:
@@ -309,11 +383,9 @@ async def _reply(session: Session) -> None:
     await session.set_typing(True)
     started = time.monotonic()
 
-    if not session.user_name:  # listen for their name before replying, so the reply can use it
+    if extract.missing(session):  # listen first, so the reply talks from up-to-date state
         said, asked = extract.since_last_reply(session)
-        found = await extract.user_name(session, said, asked)
-        if found and session.set_user_name(tidy_name(found)):
-            logger.info(f"[{session.id[:8]}] heard the user's name: {session.user_name}")
+        await flow.apply_heard(session, await extract.listen(session, said, asked))
 
     client = _openai(cfg.openai_api_key)
     messages = _chat_messages(session)
@@ -344,11 +416,24 @@ async def _reply(session: Session) -> None:
         # Placing a call: say "calling you now" and nothing that pretends it already happened.
         calling = [b for b in bubbles if b[1] == "calling_now"]
         bubbles = calling or [(lines.render("calling_now", session) or "calling you now", "calling_now")]
+    rings = any(getattr(fn, "rings", False) for fn in after)
+    if not rings and session.call.status == "idle" and any(src == "calling_now" for _, src in bubbles):
+        # "calling you now" is a promise: if the model said it without calling, call anyway.
+        from . import calls
+
+        async def ring():
+            await asyncio.sleep(1.0)
+            await calls.ring(session)
+
+        after.append(ring)
+        logger.warning(f"[{session.id[:8]}] sent calling_now without call_user; ringing anyway")
     logger.info(f"[{session.id[:8]}] reply: " + ", ".join(src for _, src in bubbles))
     await _send(session, bubbles, started)
+    session.call_outcome = None  # the agent has now responded to it
 
     for fn in after:
         await fn()
+    flow.after_agent_turn(session)
 
 
 async def _run_tool(session: Session, name: str, raw_args: str, after: list) -> str:
@@ -386,6 +471,33 @@ async def _run_tool(session: Session, name: str, raw_args: str, after: list) -> 
             session.changed()
             session.remember("system", "The user would rather text than call for now")
         return "ok, staying on text. The keep_texting line fits."
+
+    if name == "send_gmail_link":
+        if mail.connected(session):
+            return "Gmail is already connected; use the inbox tools."
+
+        async def send_card():
+            await mail.send_link(session)
+
+        mail.mark_link_sent(session)  # the card goes out after the reply, but the line fits now
+        after.append(send_card)
+        return "The link card is sent right after your reply. The gmail_link_sent line fits."
+
+    if name == "decline_gmail":
+        await mail.deny(session)
+        return "noted. The gmail_declined line fits; don't push."
+
+    if name == "inbox_overview":
+        return json.dumps(mail.overview(session))
+    if name == "read_inbox":
+        return json.dumps(mail.read_all(session))
+    if name == "search_inbox":
+        return json.dumps(mail.search(session, str(args.get("query", ""))))
+    if name == "read_email":
+        try:
+            return json.dumps(mail.read(session, int(args.get("id", 0))))
+        except (TypeError, ValueError):
+            return json.dumps({"error": "id must be a number"})
 
     if name == "call_user":
         from . import calls  # avoid an import cycle

@@ -11,7 +11,7 @@ import time
 
 from loguru import logger
 
-from . import extract, text_agent
+from . import extract, flow, text_agent
 from .session import Session
 
 RING_TIMEOUT_SECS = 25
@@ -89,6 +89,7 @@ async def _not_answered(session: Session, status: str, note: str) -> None:
     c = session.call
     _cancel(c.ring_task)
     c.status = "idle"
+    session.call_outcome = status
     await session.emit_call()
     await session.add_message("agent", "call", status=status)
     session.remember("system", note)
@@ -103,6 +104,7 @@ async def fail(session: Session, reason: str) -> None:
     _cancel(c.ring_task)
     _cancel(c.connect_task)
     c.status = "idle"
+    session.call_outcome = "failed"
     await session.emit_call()
     # (what the user sees, what the agent is told)
     shown, why = {
@@ -165,6 +167,9 @@ async def finished(session: Session, gen: int, error: str | None = None) -> None
     duration = time.time() - (c.started_at or time.time())
     c_started = c.started_at
     c.status, c.hangup, c.caption, c.owner = "idle", None, "", None
+    c.inject, c.note, c.speaking = None, None, False
+    if not was_active or error:
+        session.call_outcome = "failed"
     await session.emit_call()
     if was_active:
         await session.add_message("agent", "call", status="ended", duration=duration)
@@ -172,15 +177,13 @@ async def finished(session: Session, gen: int, error: str | None = None) -> None
         await session.add_message("system", "event", f"Call dropped: {error}")
         session.remember("system", f"The call dropped after {_fmt(duration)} because {error}. Continue over text")
     elif was_active:
-        if not session.user_name:  # they may have said it on the call
+        if extract.missing(session):  # they may have told us things on the call
             said = [t.content for t in session.history if t.role == "user" and t.channel == "voice" and t.at >= (c_started or 0)]
-            found = await extract.user_name(session, said)
-            if found:
-                session.set_user_name(text_agent.tidy_name(found))
+            await flow.apply_heard(session, await extract.listen(session, said))
         session.remember(
             "system",
-            f"Phone call ended after {_fmt(duration)}. Continue over text from where the call left off; "
-            "anything you texted during the call is already in the thread, so don't repeat it",
+            f"Phone call ended after {_fmt(duration)}. Continue over text from where the call left off: "
+            "don't re-ask anything they answered on the call, and don't repeat what you texted during it",
         )
     else:
         await session.add_message("system", "event", "Call couldn't connect")

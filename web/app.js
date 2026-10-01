@@ -55,7 +55,7 @@
       case 'typing':
         return '<div class="bubble typing"><i></i><i></i><i></i></div>';
       case 'card':
-        return `<a class="bubble card" href="#" data-action="card">
+        return `<a class="bubble card" href="${esc(m.meta.url || '#')}" target="_blank" rel="noopener" data-action="card">
           <div class="card-art">${icon('i-mail')}</div>
           <div class="card-meta"><div class="card-title">${esc(m.meta.title)}</div><div class="card-sub">${esc(m.meta.sub)}</div></div>
         </a>`;
@@ -78,6 +78,7 @@
   function eventHTML(m) {
     let html = esc(m.text);
     if (m.meta && m.meta.emphasis) html = html.replace(esc(m.meta.emphasis), `<b>${esc(m.meta.emphasis)}</b>`);
+    if (m.meta && m.meta.link) html += ` · <a href="${esc(m.meta.link)}" target="_blank" rel="noopener">${esc(m.meta.link_text || 'Open')}</a>`;
     return html;
   }
 
@@ -483,7 +484,6 @@
     const el = e.target.closest('[data-action]');
     if (!el) return;
     const a = el.dataset.action;
-    if (a === 'card') e.preventDefault();
 
     switch (a) {
       case 'accept': return state.call.status === 'ringing' && startCall();
@@ -519,6 +519,9 @@
         state.typing = !state.typing;
         return render();
       case 'dev-card': return send({ type: 'dev_card' });
+      case 'dev-inbox':
+        if (state.sid) window.open(`/inbox.html?sid=${encodeURIComponent(state.sid)}`, '_blank', 'noopener');
+        return;
       case 'dev-ring': return send({ type: 'dev_ring' });
       case 'dev-reset': return restart();
       case 'start': return start();

@@ -801,3 +801,6 @@ body[data-view="chat"] .landing { display: none; }
 .lp-bubble:nth-child(3) { animation-delay: 2.1s; }
 :root[data-theme="dark"] .lp-bubble.in { background: #262628; color: #fff; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .lp-bubble.in { background: #262628; color: #fff; } }
+
+.event a { color: var(--blue); text-decoration: none; font-weight: 600; }
+.event a:hover { text-decoration: underline; }

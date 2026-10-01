@@ -13,21 +13,22 @@ from typing import Any
 
 from loguru import logger
 
+from .lines import INBOX_OWNER
 from .session import Session
 
 # ── the default inbox ───────────────────────────────────────────
 # (from_name, from_email, subject, body, minutes_ago, unread, starred)
 DEFAULT_EMAILS: list[tuple[str, str, str, str, int, bool, bool]] = [
     ("Marcus Lee", "marcus@brightline-logistics.com", "Dashboard down again — third time this month",
-     "Hi,\n\nOur ops team can't load the routing dashboard again. This is the third outage this month and we have a board review Friday. I need a timeline today or we'll have to revisit the contract.\n\nMarcus", 38, True, False),
+     "Hi Alex,\n\nOur ops team can't load the routing dashboard again. This is the third outage this month and we have a board review Friday. I need a timeline today or we'll have to revisit the contract.\n\nMarcus", 38, True, False),
     ("Priya Shah", "priya@northbeam.vc", "Q3 numbers before Thursday's partner meeting?",
-     "Hey! Could you send updated Q3 revenue and burn before Thursday? Partners want to discuss the follow-on. A short summary is fine.\n\nPriya", 125, True, True),
+     "Hey Alex! Could you send updated Q3 revenue and burn before Thursday? Partners want to discuss the follow-on. A short summary is fine.\n\nPriya", 125, True, True),
     ("Jamie Chen", "jamie@yourco.io", "can you review the pricing page copy tonight?",
      "pushed a draft to the doc. mostly worried about the enterprise tier wording. need your eyes before we ship tomorrow morning", 190, True, False),
     ("Sofia Alvarez", "sofia.alvarez@fastmail.com", "Re: Senior engineer offer — a few questions",
      "Thanks so much for the offer! Before I sign: is the equity on a 4-year vest with a 1-year cliff, and is remote-first still the plan? I have another offer expiring Monday.\n\nSofia", 300, True, False),
     ("Dana Brooks", "dana@harborpm.com", "Office lease renewal — signature needed by the 15th",
-     "Hi, attached is the renewal for suite 4B. Rent goes up 6%. Please sign by the 15th or let me know if you'd like to discuss terms.\n\nDana, Harbor Property Management", 720, False, False),
+     "Hi Alex, attached is the renewal for suite 4B. Rent goes up 6%. Please sign by the 15th or let me know if you'd like to discuss terms.\n\nDana, Harbor Property Management", 720, False, False),
     ("Hollis & Grant LLP", "docs@hollisgrant.law", "Draft SAFE for review",
      "Please find the draft SAFE for the bridge round. Key terms: $12M cap, no discount, MFN. Let us know if you have comments by Wednesday.", 1500, False, False),
     ("Calendar", "calendar@yourco.io", "Invitation: Board prep @ Fri 10:00",
@@ -42,8 +43,7 @@ DEFAULT_EMAILS: list[tuple[str, str, str, str, int, bool, bool]] = [
 
 
 def account(session: Session) -> str:
-    base = (session.user_name or "you").lower().replace(" ", ".")
-    return f"{base}@sandbox.mail"
+    return f"{INBOX_OWNER.lower()}@sandbox.mail"  # the inbox is Alex's (the agent can infer the name)
 
 
 # ── storage on the session ──────────────────────────────────────
@@ -223,26 +223,9 @@ def link_url(session: Session) -> str:
     return f"/{page}?sid={session.id}"
 
 
-def mark_link_sent(session: Session) -> None:
-    state(session)["link_sent"] = True
-    session.changed()
-
-
 async def send_link(session: Session) -> None:
-    mark_link_sent(session)
     await session.add_message("agent", "card", title="Connect Gmail", sub="Tap to connect your inbox",
                               url=f"/connect.html?sid={session.id}")
-
-
-async def _tell_agent(session: Session, note: str) -> None:
-    """Let whichever channel is live react: the call if there is one, otherwise text."""
-    from . import text_agent  # avoid an import cycle
-
-    session.remember("system", note)
-    if session.call.status == "active" and session.call.inject:
-        asyncio.create_task(session.call.inject(note))
-    else:
-        text_agent.schedule_reply(session, delay=1.0)
 
 
 async def connect(session: Session) -> None:
@@ -262,12 +245,28 @@ async def connect(session: Session) -> None:
         listing = "; ".join(
             f"[{e['id']}] {e['from']}: \"{e['subject']}\" ({'unread, ' if e['unread'] else ''}"
             f"{'starred, ' if e['starred'] else ''}{e['received']})" for e in ov["recent"])
-        await _tell_agent(
-            session,
-            f"The user just connected their Gmail: {ov['total']} emails, {ov['unread']} unread. Most recent: {listing}. "
-            "React right away with ONE concrete, useful observation tied to what they need (read_email if you need "
-            "the details). Only mention emails listed here or returned by the inbox tools.",
-        )
+        overview_note = (f"Gmail is connected: {ov['total']} emails, {ov['unread']} unread. Most recent: {listing}.")
+        email_task = session.help_need if session.ob.get("help_is_email") else None
+        session.ob["pending"] = None
+        session.remember("system", "They connected their Gmail")
+        from . import flow, text_agent  # avoid an import cycle
+
+        if session.call.status == "active" and session.call.inject:
+            # What they asked for on this call isn't saved until it ends, so the call decides.
+            note = (f"{overview_note} It worked: confirm that in a few words. If they asked for something "
+                    "email-related, tell them you're reading through their email now and will text them when "
+                    "you're done, then call end_call with kind \"email\" and the task. Otherwise mention ONE "
+                    "concrete, useful thing from it (only emails listed here or returned by the inbox tools).")
+            asyncio.create_task(session.call.inject(note))
+        elif email_task and not session.ob.get("complete"):
+            text_agent.send_beats(session, [], answer=True, note=f"{overview_note} {flow.EMAIL_TASK_NOTE}",
+                                  complete=("email", email_task))
+        else:
+            nxt = flow.next_ask(session)
+            text_agent.send_beats(
+                session, [nxt] if nxt else [], answer=True,
+                note=f"{overview_note} React with ONE concrete, useful observation tied to what they need "
+                     "(read_email for details). Only mention emails listed here or returned by the inbox tools.")
 
 
 async def deny(session: Session) -> None:

@@ -117,9 +117,12 @@ async def handle(session: Session, data: dict) -> None:
     # ── shell controls ──
     elif kind == "dev_ring":
         await calls.ring(session)
+    elif kind == "save_contact":
+        await calls.contact_saved(session)
     elif kind == "dev_nudge":
-        session.remember("system", "Send the user a short, friendly follow-up message")
-        text_agent.schedule_reply(session, delay=0.2)
+        nxt = flow.next_ask(session)
+        text_agent.send_beats(session, [nxt] if nxt else [], answer=not nxt,
+                              note="" if nxt else "Send a short, friendly follow-up.")
     elif kind == "dev_card":
         await mail.send_link(session)
 

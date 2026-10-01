@@ -14,13 +14,25 @@ people don't play by the rules.
 
 ## The flow
 
-1. Landing page → **Chat with Persona** starts a session; Persona texts first.
-2. It asks what to call it. "You pick", or 25s of silence (typing holds the
-   timer off), gives **Your Persona**.
-3. It offers a quick call. On the call (or over text if they'd rather) it learns
-   their name and what they could use a hand with.
-4. It offers to connect Gmail, texting the link mid-call if they're on the
-   phone, and reacts with something concrete from the inbox.
+Onboarding is four small flows, plus the call that carries most of them:
+
+1. **Persona's name.** Asked first. Anything but a name (a question, "you pick",
+   25s of silence) → **Your Persona**, never re-asked. Then Persona sends its
+   **contact card**: calls only ring once it's saved, like an iPhone silencing
+   unknown callers. Otherwise "call didn't go through: not in your contacts".
+2. **Their name.** Asked on the call (or by text). "I'd rather not say" is
+   final. Once Gmail is connected: "your email says you're Alex, is that right?"
+3. **Gmail.** Offered on the call: the link is texted mid-call. "No" is final.
+4. **A first action.** "What can I help you with?" (or "what can you do?").
+   Email → Gmail flow. Anything else → "on it, I'll text you when it's done."
+   Nothing in mind → suggest Gmail.
+
+The call: introduce + ask their name → "nice to meet you, what can I help you
+with?" → for email, text the link, confirm it connected, "reading through your
+email now, I'll text you when I'm done", hang up, then actually text the
+result. For anything else, "I'm on it" and hang up. The thread then shows
+**Onboarding complete** with the handed-off task: where onboarding ends and
+real work begins.
 
 ## Design choices
 
@@ -31,26 +43,35 @@ state. Anything said on the call is in the text agent's context afterwards,
 and the call starts knowing the text thread. Hanging up isn't an error, just a
 switch back to text: the agent picks up where the call left off.
 
-### 2. A scripted spine, with the model writing the words
+### 2. Listen → plan → talk
 
-`flow.py` decides *where* the conversation is (naming → call offer → their
-name → their need → Gmail). `lines.py` holds approved wording for the key beats
-(`named`, `calling_now`, `ask_help`, `gmail_offer`, …). Each reply is a list
-of parts, each either an approved line sent word for word or the model's own
-words when the moment needs them, and every bubble records which it was. Lines
-appear only when they make sense: `after_decline` only right after a decline,
-`gmail_offer` only once the need is known. The model can't pick a beat whose
-moment hasn't happened. The opener skips the model entirely, so it's instant.
+Each user message goes through three steps:
 
-### 3. Listen first, then talk
+- **Listen** (`extract.py`): a small single-purpose call reports what they
+  said: a name or rename, their name or "rather not say", their need (and
+  whether it's about email), yes/no to the call or Gmail, "what can you do?",
+  and whether the message needs a real answer. It's told the pending question,
+  so a bare "sure" lands on the right thing, and it reads every message it
+  hasn't processed, even ones typed mid-reply.
+- **Plan** (`flow.py`): turns that into state and **beats**, approved lines from
+  `lines.py` sent word for word. Lines carry actions, so saying "calling you now"
+  rings and "here's the link" sends the link. Saying it and doing it can't drift.
+- **Talk** (`text_agent.py`): the chat model is only called when the user said
+  something that needs a real answer; most replies skip it entirely.
 
-The chat model is good at conversation and bad at bookkeeping: it would happily
-reply "nice to meet you, owen!" and never save the name. So a separate,
-single-purpose **listener** (`extract.py`) reads the user's latest lines
-*before* each reply and updates state: the agent's name (including renames),
-the user's name, their need, and "no calls, please". The chat model then talks
-from up-to-date state. That one split fixed a whole class of bugs, like the
-agent renaming itself "Owen" because the user said "i'm owen".
+The one rule, enforced in code: **never ask the same thing twice in a row.** A
+dodged question moves the flow on, and each item gets at most two asks.
+
+Why: the chat model was good at conversation and bad at bookkeeping. It would
+say "nice to meet you, owen!" and save nothing, rename itself "Owen", or say
+"calling you now" without calling. Splitting understanding and deciding from
+talking fixed that whole class of bugs.
+
+### 3. Fast typists
+
+A user who types fast lands mid-reply, so a reply that has started sending
+finishes before the next one is planned, and every question it asked is on
+record. The opener can't be cancelled.
 
 ### 4. The agent loop: waiting vs. stalled
 
@@ -80,9 +101,10 @@ double-text ONE line that moves to the next missing step
 
 It's deliberately conservative. A question in the user's court is respected
 (no nagging), typing pauses the clock, there's at most one nudge per silence,
-and once onboarding is done the agent stops driving. The nudge usually lands
-on an approved line (`ask_user_name`, `ask_help`, `gmail_offer`), so it sounds
-like the rest of the flow rather than a reminder. The name timeout is the same
+and once onboarding is done the agent stops driving. The nudge is always an
+approved line (`ask_user_name`, `ask_help`, `gmail_offer`) and never the
+question just asked, so it sounds like the rest of the flow rather than a
+reminder. The name timeout is the same
 idea applied to the very first question.
 
 ### 5. Calls that can't get stuck
@@ -96,12 +118,18 @@ page holding its audio, which gets 4s to reconnect, so a network blip doesn't
 kill it but a closed tab does. If the user asks to be called, the agent calls,
 even after "let's just text" (that only stops it *offering*).
 
+The call itself is conversational, not an interview: it reacts more than it
+asks, backs off when the user hesitates, and waits for a real end of turn
+rather than a thinking pause (low-eagerness turn detection). It can end the
+call itself (`end_call`) once it needs to go do something, handing off the
+task, and the goodbye is the last thing said.
+
 ### 6. Gmail: simulated, and a context layer
 
 Real Gmail inbox access needs Google's app verification, so connecting is
 simulated: the link opens a new tab (so a live call keeps its audio), connects
-one default inbox, and the agent reacts with one concrete thing from it. If a
-call is live, it says it out loud within about a second.
+one default inbox (Alex's), and the agent reacts with one concrete thing from
+it. If a call is live, it says so out loud within about a second.
 
 After that the inbox is **context, never a notification**. The tab becomes an
 editor (add, edit, delete, star; opening an email marks it read), and every
@@ -116,7 +144,7 @@ could slot in behind them.
 
 Prompts push for one short text, one question at a time, no filler, and voice
 turns of one sentence. Measured with `scripts/text_e2e.py`, that took replies
-from 19 to about 12 words, and call turns from 11–21s to 2–4s. On calls, every
+from about 19 words to 13–17, and call turns from 11–21s to 2–4s. On calls, every
 tool call splits the agent's turn around a pause, so the voice agent only gets
 tools worth that pause (texting the user, reading the inbox); bookkeeping is
 left to the listener.
@@ -128,9 +156,9 @@ web/        landing page, iMessage + call UI, Gmail connect + inbox editor (no b
 server/
   app.py         FastAPI: static UI, /ws thread socket, /api/offer WebRTC, /api/mail
   session.py     one session per visitor: thread, model history, call state (saved to .data/)
-  flow.py        onboarding steps, the name timeout, and the waiting/stalled loop
-  lines.py       approved lines: exact wording for the key beats (edit copy here)
-  extract.py     the listener: names, renames, their need, call preference
+  flow.py        the flow engine: item state, planning beats, name timeout, stall loop, completion
+  lines.py       approved lines and their actions (edit copy here)
+  extract.py     the listener: what the user just said, as onboarding facts
   text_agent.py  iMessage replies (OpenAI chat, structured replies, tools)
   calls.py       call lifecycle: ring / accept / decline / missed / hang up
   voice.py       Pipecat pipeline: WebRTC ⇄ OpenAI Realtime speech-to-speech

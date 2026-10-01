@@ -1,165 +1,68 @@
-"""The approved lines: exact wording for the key beats of onboarding.
+"""The approved lines: exact wording for every beat of onboarding.
 
-Edit the wording here. The model sees these (with a note on when each fits) and
-prefers them; it writes its own text only when the moment calls for something
-they don't cover. Each line is sent word for word; "\\n" splits it into bubbles.
-Placeholders: {agent_name}, {user_name}. A line whose placeholder isn't known yet
-is not offered.
+Edit the wording here. The flow engine (flow.py) decides which lines to send;
+the model only writes free-form answers around them. A line can ASK about one
+onboarding item (so the engine knows what's pending and never asks it twice in
+a row) and can carry an ACTION that happens right after it's sent, so saying
+"calling you now" and actually ringing can't drift apart.
+
+"\\n" splits a line into bubbles. Placeholders: {agent_name}, {user_name}, {owner}.
 """
 from __future__ import annotations
 
-import re
-from collections.abc import Callable
 from dataclasses import dataclass
 
 from .session import Session
+
+INBOX_OWNER = "Alex"  # the simulated inbox belongs to "Alex" (see mail.py)
 
 
 @dataclass(frozen=True)
 class Line:
     text: str
-    when: str
-    show: Callable[[Session], bool] | None = None  # only offered when this is true
-
-
-def _after(outcome: str):
-    return lambda s: s.call_outcome == outcome
-
-
-def _gmail_status(s: Session) -> str:
-    return (s.mail or {}).get("status", "none")
-
-
-def _gmail_open(s: Session) -> bool:
-    return _gmail_status(s) != "connected"
-
-
-def _gmail_link_out(s: Session) -> bool:
-    return _gmail_open(s) and bool((s.mail or {}).get("link_sent"))
-
-
-def _gmail_offerable(s: Session) -> bool:
-    return bool(s.help_need) and _gmail_status(s) == "none"
-
-
-def _need_unknown(s: Session) -> bool:
-    return not s.help_need
-
-
-def _user_unknown(s: Session) -> bool:
-    return not s.user_name
+    asks: str | None = None    # the onboarding item this line asks about
+    action: str | None = None  # "contact_card" | "gmail_card" | "ring"
 
 
 LINES: dict[str, Line] = {
-    # ── naming ──
-    "opener": Line(
-        "hey! i'm your new persona 👋\nwhat do you want to call me?",
-        "Your very first message. Sent automatically; never choose it yourself.",
-    ),
-    "ask_agent_name": Line(
-        "so, what do you want to call me?",
-        "Steering back to naming you after answering something else.",
-    ),
-    "check_mash": Line(
-        "haha is that a name, or did your cat walk across the keyboard?",
-        "They sent something that looks like a keyboard mash, not a name.",
-    ),
-    "named": Line(
-        "{agent_name}, i like it.\ncan i give you a quick call? it's faster than texting",
-        "Right after they first name you.",
-    ),
-    "default_named": Line(
-        "i'll go by {agent_name} for now. you can rename me anytime\ncan i give you a quick call? it's faster than texting",
-        "They didn't pick a name, so you've gone with the default.",
-    ),
-    "renamed": Line(
-        "{agent_name} it is",
-        "They renamed you later on.",
-    ),
+    # ── 1. Persona's name ──
+    "opener": Line("hey! i'm your new persona 👋\nwhat do you want to call me?", asks="agent_name"),
+    "named": Line("{agent_name}, i like it\nhere's my contact, save it so my calls come through",
+                  action="contact_card"),
+    "default_named": Line("i'll go by {agent_name} for now, you can rename me anytime\n"
+                          "here's my contact, save it so my calls come through", action="contact_card"),
+    "renamed": Line("{agent_name} it is"),
     # ── the call ──
-    "calling_now": Line(
-        "calling you now 📞",
-        "Right after you call call_user.",
-    ),
-    "keep_texting": Line(
-        "all good, texting works too",
-        "They'd rather not have a call.",
-    ),
-    "after_decline": Line(
-        "no worries, we can keep going here",
-        "They declined your call.",
-        _after("declined"),
-    ),
-    "after_missed": Line(
-        "tried calling, no stress. we can keep going here",
-        "They didn't pick up.",
-        _after("missed"),
-    ),
-    "call_failed": Line(
-        "hm, the call didn't go through. we can keep going here",
-        "The call couldn't connect.",
-        _after("failed"),
-    ),
-    # ── getting to know them ──
-    "ask_user_name": Line(
-        "what's your name, by the way?",
-        "You don't know their name yet.",
-        _user_unknown,
-    ),
-    "nice_to_meet": Line(
-        "nice to meet you, {user_name}",
-        "They just told you their name.",
-    ),
-    "ask_help": Line(
-        "what's one thing you'd love off your plate this week?",
-        "You don't know yet what they need help with.",
-        _need_unknown,
-    ),
-    # ── gmail ──
-    "gmail_offer": Line(
-        "want to connect your gmail? easier to show you than tell you",
-        "You know what they need help with and Gmail isn't connected yet.",
-        _gmail_offerable,
-    ),
-    "gmail_link_sent": Line(
-        "tap that and i'll take a look",
-        "Right after you call send_gmail_link.",
-        _gmail_link_out,
-    ),
-    "gmail_declined": Line(
-        "no problem, we can do that later",
-        "They don't want to connect Gmail right now.",
-    ),
+    "offer_call": Line("can i give you a quick call? it's faster than texting", asks="call"),
+    "calling_now": Line("calling you now 📞", action="ring"),
+    "keep_texting": Line("all good, texting works too"),
+    "call_blocked": Line("my call didn't go through, i'm not in your contacts yet\n"
+                         "tap Add on my card and i'll try again"),
+    "after_decline": Line("no worries, we can keep going here"),
+    "after_missed": Line("tried calling, no stress. we can keep going here"),
+    "call_failed": Line("hm, the call didn't go through. we can keep going here"),
+    "after_call": Line("good chatting!"),
+    # ── 2. their name ──
+    "ask_user_name": Line("what's your name, by the way?", asks="user_name"),
+    "confirm_email_name": Line("your email says you're {owner}, is that right?", asks="confirm_name"),
+    "nice_to_meet": Line("nice to meet you, {user_name}"),
+    "no_name_ok": Line("all good, no names needed"),
+    # ── 4. first action ──
+    "ask_help": Line("what's one thing you'd love off your plate this week?", asks="first_action"),
+    "capabilities": Line("i can help with email, your calendar, reminders and quick research\n"
+                         "want to start with any of these?", asks="first_action"),
+    # ── 3. gmail ──
+    "gmail_offer": Line("want to connect your gmail? easier to show you than tell you", asks="gmail"),
+    "gmail_for_ideas": Line("no worries. connect your gmail and i'll find something to take off your plate",
+                            asks="gmail"),
+    "gmail_link": Line("here's the link, tap it and i'll take a look", action="gmail_card"),
+    "gmail_declined": Line("no problem, we'll leave email out of it"),
+    # ── the endgame ──
+    "on_it": Line("on it, i'll text you when it's done"),
+    "all_set": Line("you're all set! if anything comes to mind, just text me"),
 }
 
-_PLACEHOLDER = re.compile(r"\{(\w+)\}")
 
-
-def _values(s: Session) -> dict[str, str | None]:
-    return {"agent_name": s.agent_name, "user_name": s.user_name}
-
-
-def available(s: Session) -> dict[str, str]:
-    """Lines the model may choose right now, with placeholders filled in."""
-    vals = _values(s)
-    out = {}
-    for key, line in LINES.items():
-        if key == "opener":
-            continue
-        if line.show and not line.show(s):
-            continue
-        needed = _PLACEHOLDER.findall(line.text)
-        if all(vals.get(n) for n in needed):
-            out[key] = line.text.format(**{n: vals[n] for n in needed})
-    return out
-
-
-def render(key: str, s: Session) -> str | None:
-    return available(s).get(key) if key != "opener" else LINES["opener"].text
-
-
-def catalog(s: Session) -> str:
-    """The lines section of the system prompt."""
-    avail = available(s)
-    rows = [f'- {key}: "{text}"  ({LINES[key].when})'.replace("\n", " / ") for key, text in avail.items()]
-    return "\n".join(rows)
+def render(key: str, s: Session) -> str:
+    return LINES[key].text.format(agent_name=s.agent_name or "Persona", user_name=s.user_name or "",
+                                  owner=INBOX_OWNER)

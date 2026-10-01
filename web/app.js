@@ -34,6 +34,7 @@
     agentName: null,
     messages: [],
     typing: false,
+    contactSaved: false,
     call: { status: 'idle', direction: 'incoming', started_at: null },
     minimized: false,
     muted: false,
@@ -59,6 +60,14 @@
           <div class="card-art">${icon('i-mail')}</div>
           <div class="card-meta"><div class="card-title">${esc(m.meta.title)}</div><div class="card-sub">${esc(m.meta.sub)}</div></div>
         </a>`;
+      case 'contact': {
+        const saved = state.contactSaved;
+        return `<div class="bubble contactcard">
+          <div class="cc-top"><span class="avatar md brand">${LOGO}</span>
+            <span class="cc-text"><b>${esc(m.meta.name || state.agentName || UNNAMED)}</b><small>Contact card</small></span></div>
+          <button class="cc-add" data-action="save-contact"${saved ? ' disabled' : ''}>${saved ? 'Saved to contacts' : 'Add Contact'}</button>
+        </div>`;
+      }
       case 'call': {
         const st = m.meta.status;
         const label = { ended: 'Audio Call', declined: 'Declined', missed: 'Missed Call' }[st] || 'Call';
@@ -127,6 +136,7 @@
   function previewOf(m) {
     if (!m) return '';
     if (m.kind === 'card') return `🔗 ${m.meta.title}`;
+    if (m.kind === 'contact') return 'Contact card';
     if (m.kind === 'call') return { ended: 'Audio Call', declined: 'Declined call', missed: 'Missed Call' }[m.meta.status] || 'Call';
     return m.text;
   }
@@ -205,6 +215,7 @@
         const known = new Set(s.messages.map((m) => m.meta && m.meta.client_id).filter(Boolean));
         state.messages = [...s.messages, ...state.messages.filter((m) => m.pending && !known.has(m.meta.client_id))];
         state.typing = s.typing;
+        state.contactSaved = !!s.contact_saved;
         applyCall(s.call);
         render();
         return;
@@ -229,6 +240,9 @@
         return render();
       case 'call':
         return applyCall(ev.call);
+      case 'contact_saved':
+        state.contactSaved = true;
+        return render();
       case 'caption':
         return setCaption(ev.text, ev.role);
       case 'speaking':
@@ -446,7 +460,7 @@
 
   function resetState() {
     voice.stop();
-    Object.assign(state, { agentName: null, messages: [], typing: false, minimized: false, muted: false });
+    Object.assign(state, { agentName: null, messages: [], typing: false, minimized: false, muted: false, contactSaved: false });
     applyCall({ status: 'idle', direction: 'incoming', started_at: null });
     render();
     const old = ws;
@@ -500,6 +514,11 @@
         return renderCall();
       case 'call-out':
         return state.call.status === 'idle' && startCall();
+      case 'save-contact':
+        if (state.contactSaved) return;
+        state.contactSaved = true; // optimistic: the button flips right away
+        render();
+        return send({ type: 'save_contact' });
       case 'mute':
         state.muted = !state.muted;
         voice.setMuted(state.muted);

@@ -19,8 +19,25 @@ from fastapi import WebSocket
 from loguru import logger
 
 Sender = Literal["agent", "user", "system"]
-Kind = Literal["text", "call", "card", "event"]
+Kind = Literal["text", "call", "card", "contact", "event"]
 CallStatus = Literal["idle", "ringing", "connecting", "active"]
+
+
+def new_onboarding() -> dict[str, Any]:
+    return {
+        # status per item. agent_name/user_name/first_action are "done" once their value is set.
+        "status": {"call": "open", "user_name": "open", "first_action": "open"},
+        "asks": {"agent_name": 0, "call": 0, "user_name": 0, "first_action": 0, "gmail": 0},
+        "pending": None,     # the item the agent's last message asked about, awaiting an answer
+        "last_ask": None,    # never ask this one again immediately
+        "contact_saved": False,
+        "card_sent": False,
+        "retry_call": False,  # a call was blocked by the unsaved contact: ring once it's saved
+        "help_is_email": False,  # their first action is about email
+        "complete": False,   # onboarding is over: Persona hands off to real functions
+        "task": None,        # what it's handing off (e.g. "summarize my slack messages")
+        "handoff": None,     # set by the call's end_call: {"kind": email|other|none, "task": ...}
+    }
 
 
 @dataclass
@@ -67,8 +84,7 @@ class Session:
         self.user_name: str | None = None
         self.help_need: str | None = None  # what they want a hand with, in their words
         self.mail: dict[str, Any] = {}  # sandbox Gmail (see mail.py)
-        self.call_offer_done = False  # a call happened, or the user said they'd rather text
-        self.call_outcome: str | None = None  # "declined" | "missed" | "failed", until the agent has replied
+        self.ob: dict[str, Any] = new_onboarding()  # flow state (see flow.py)
         self.name_timer: asyncio.Task | None = None
         self.messages: list[Message] = []
         self.history: list[Turn] = []
@@ -77,6 +93,7 @@ class Session:
         self.sockets: dict[WebSocket, str] = {}  # socket → page id
         self.reply_task: asyncio.Task | None = None
         self.line_task: asyncio.Task | None = None  # a scripted line being sent (e.g. the opener)
+        self.sending_task: asyncio.Task | None = None  # the reply currently sending bubbles
         self.stall_task: asyncio.Task | None = None  # checks, after each agent turn, whether things stalled
         self.user_typing_at = 0.0
         self.nudges_since_user = 0  # double texts sent since the user last spoke
@@ -110,6 +127,7 @@ class Session:
             "agent_name": self.agent_name,
             "messages": [asdict(m) for m in self.messages],
             "typing": self.typing,
+            "contact_saved": self.ob["contact_saved"],
             "call": self.call_json(),
         }
 
@@ -150,7 +168,6 @@ class Session:
         self.agent_name = name
         self.changed()
         await self.emit("contact", agent_name=name)
-        await self.add_message("system", "event", f"Contact saved as {name}", emphasis=name)
 
     def set_user_name(self, name: str) -> bool:
         if not name or name == self.user_name:
@@ -189,7 +206,7 @@ class Session:
             "user_name": self.user_name,
             "help_need": self.help_need,
             "mail": self.mail,
-            "call_offer_done": self.call_offer_done,
+            "ob": self.ob,
             "messages": [asdict(m) for m in self.messages],
             "history": [asdict(t) for t in self.history],
         }
@@ -202,7 +219,7 @@ class Session:
         s.user_name = data.get("user_name")
         s.help_need = data.get("help_need")
         s.mail = data.get("mail") or {}
-        s.call_offer_done = bool(data.get("call_offer_done", False))
+        s.ob = {**new_onboarding(), **(data.get("ob") or {})}
         s.messages = [Message(**m) for m in data.get("messages", [])]
         s.history = [Turn(**t) for t in data.get("history", [])]
         s._ids = itertools.count(max((m.id for m in s.messages), default=0) + 1)

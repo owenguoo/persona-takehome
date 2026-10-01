@@ -80,13 +80,14 @@ class Mic(MediaStreamTrack):
 async def main():
     lines = {
         "u1": "Hey! I'm Owen.",
-        "u2": "Honestly my inbox is a mess. Could you take a look at it?",
+        "u2": "Honestly my inbox is a mess. Could you help me figure out what needs a reply?",
         "u3": "Yeah, send me the link.",
     }
     audio = {k: tts(v) for k, v in lines.items()}
     sid = str(uuid.uuid4()); page = "probe-" + uuid.uuid4().hex[:8]
     speaking = asyncio.Event(); quiet = asyncio.Event(); quiet.set(); ringing = asyncio.Event()
     starts, ends, captions, thread = [], [], [], []
+    call_state = {}
     async with websockets.connect(f"ws://{BASE}/ws?sid={sid}&page={page}") as ws:
         async def reader():
             async for raw in ws:
@@ -94,7 +95,9 @@ async def main():
                 if t == "message":
                     m = ev["message"]; line = m["text"] if m["kind"] in ("text", "event") else f"<{m['kind']} {m['meta'].get('title', m['meta'])}>"
                     thread.append((ts(), m["sender"], line)); log(f"thread  {m['sender']:6} {line}")
-                elif t == "call" and ev["call"]["status"] == "ringing": ringing.set()
+                elif t == "call":
+                    call_state.update(ev["call"])
+                    if ev["call"]["status"] == "ringing": ringing.set()
                 elif t == "speaking":
                     (starts if ev["on"] else ends).append(ts())
                     (speaking.set(), quiet.clear()) if ev["on"] else (speaking.clear(), quiet.set())
@@ -102,7 +105,7 @@ async def main():
         rt = asyncio.create_task(reader())
         async def text(msg, wait):
             await ws.send(json.dumps({"type": "user_message", "text": msg, "client_id": uuid.uuid4().hex})); await asyncio.sleep(wait)
-        await asyncio.sleep(4); await text("nova", 8); await text("sure call me", 1)
+        await asyncio.sleep(4); await text("nova", 8); await ws.send(json.dumps({"type": "save_contact"})); await asyncio.sleep(1); await text("sure call me", 1)
         await asyncio.wait_for(ringing.wait(), 20); await asyncio.sleep(1.5)
         await ws.send(json.dumps({"type": "call_accept", "page": page}))
         mic = Mic(); pc = RTCPeerConnection(); pc.addTrack(mic); sink = MediaBlackhole()
@@ -147,14 +150,17 @@ async def main():
             log(f">> agent started talking {starts[n] - connect_at:.1f}s after connecting")
         except asyncio.TimeoutError:
             log(">> agent said nothing within 20s of connecting")
-        # done when nothing has been said for 4s (tool calls pause mid-turn)
-        while True:
-            await asyncio.wait_for(quiet.wait(), 40)
-            mark = len(starts)
-            await asyncio.sleep(4)
-            if len(starts) == mark and quiet.is_set():
+        # The agent should confirm, say it's reading the email, and hang up by itself.
+        ended_by_agent = False
+        for _ in range(60):
+            if call_state.get("status") == "idle":
+                ended_by_agent = True
                 break
-        await ws.send(json.dumps({"type": "hangup"})); await asyncio.sleep(8)
+            await asyncio.sleep(0.5)
+        log(f">> agent ended the call itself: {ended_by_agent}")
+        if not ended_by_agent:
+            await ws.send(json.dumps({"type": "hangup"}))
+        await asyncio.sleep(14)  # the email result arrives by text
         pt.cancel(); await pc.close(); rt.cancel()
     print("\n=== what the agent said after Gmail connected (final caption per turn) ===")
     after = [t for at, t in captions if at >= connect_at]

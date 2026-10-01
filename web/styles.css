@@ -804,3 +804,17 @@ body[data-view="chat"] .landing { display: none; }
 
 .event a { color: var(--blue); text-decoration: none; font-weight: 600; }
 .event a:hover { text-decoration: underline; }
+
+/* Contact card (a vCard attachment): saving it lets Persona's calls ring */
+.bubble.contactcard { padding: 0 !important; overflow: hidden; width: min(250px, 75%); white-space: normal; }
+.msg .bubble.contactcard::before, .msg .bubble.contactcard::after { display: none; }
+.cc-top { display: flex; align-items: center; gap: 10px; padding: 10px 12px; }
+.cc-text { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
+.cc-text b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cc-text small { font-size: .78em; color: var(--text-2); }
+.cc-add {
+  display: block; width: 100%; padding: 9px 12px; border-top: .5px solid var(--sep);
+  color: var(--blue); font-weight: 600; font-size: .92em; text-align: center; transition: background .15s;
+}
+.cc-add:hover:not([disabled]) { background: var(--fill); }
+.cc-add[disabled] { color: var(--text-2); cursor: default; }

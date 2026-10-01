@@ -11,6 +11,7 @@ import time
 from loguru import logger
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
+    FunctionCallResultProperties,
     BotStoppedSpeakingFrame,
     Frame,
     InterruptionFrame,
@@ -108,7 +109,8 @@ async def run_call(session: Session, connection: SmallWebRTCConnection, generati
                     audio=AudioConfiguration(
                         input=AudioInput(
                             transcription=InputAudioTranscription(),
-                            turn_detection=SemanticTurnDetection(),
+                            # "low": wait for a real end of turn, not a thinking pause ("hmm… probably email?")
+                            turn_detection=SemanticTurnDetection(eagerness="low"),
                             noise_reduction=InputAudioNoiseReduction(type="near_field"),
                         ),
                         output=AudioOutput(voice=cfg.voice),
@@ -134,8 +136,39 @@ async def run_call(session: Session, connection: SmallWebRTCConnection, generati
         async def send_gmail_link(params: FunctionCallParams):
             """Text the user a link card to connect their Gmail, once they've agreed."""
             if not mail.connected(session):
+                session.ob["asks"]["gmail"] += 1
                 await mail.send_link(session)
             await params.result_callback({"sent": True})
+
+        async def end_call(params: FunctionCallParams, kind: str, task: str = ""):
+            """Hang up, right after your short goodbye.
+
+            Args:
+                kind: "email" if you're going off to work on their email, "other" if you're going off to work
+                    on something else they asked for, "none" if setup is simply done. Say your goodbye
+                    BEFORE calling this: nothing is said after it.
+                task: What they asked you to do, in a few words (empty for "none").
+            """
+            session.ob["handoff"] = {"kind": kind if kind in ("email", "other") else "none", "task": task.strip()}
+            session.changed()
+            logger.info(f"[{session.id[:8]}] call  tool: end_call {session.ob['handoff']}")
+            # The goodbye was said before this call: don't prompt another turn.
+            await params.result_callback({"ok": True}, properties=FunctionCallResultProperties(run_llm=False))
+            gen = generation
+
+            async def hang_up_after_goodbye():
+                # Let the goodbye finish: hang up once it's been quiet for a moment (max ~12s).
+                quiet_since = time.monotonic()
+                for _ in range(60):
+                    await asyncio.sleep(0.2)
+                    if session.call.speaking:
+                        quiet_since = time.monotonic()
+                    elif time.monotonic() - quiet_since > 1.2:
+                        break
+                if session.call.generation == gen:
+                    await calls.hangup(session, "agent ended the call")
+
+            asyncio.create_task(hang_up_after_goodbye())
 
         async def inbox_overview(params: FunctionCallParams):
             """Their connected inbox at a glance: counts, top senders, the most recent emails."""
@@ -166,7 +199,7 @@ async def run_call(session: Session, connection: SmallWebRTCConnection, generati
             # Only text_user: on a realtime call every tool call splits the agent's turn
             # around a pause, so anything that can wait (like saving the user's name)
             # is left to the text agent, which sees the call transcript afterwards.
-            [text_user, send_gmail_link, inbox_overview, read_inbox, search_inbox, read_email],
+            [text_user, send_gmail_link, inbox_overview, read_inbox, search_inbox, read_email, end_call],
         )
         user_agg, assistant_agg = LLMContextAggregatorPair(context)
 

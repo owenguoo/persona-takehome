@@ -131,6 +131,8 @@ async def main():
 
         await asyncio.sleep(7)                       # intro texts
         await text("call you nova", 9)               # name → call offer
+        await ws.send(json.dumps({"type": "save_contact"}))  # calls only ring for saved contacts
+        await asyncio.sleep(1)
         await text("yeah sure, call me", 1)
         await asyncio.wait_for(ringing.wait(), 20)
         await asyncio.sleep(2.5)                     # let it ring a moment, like a person

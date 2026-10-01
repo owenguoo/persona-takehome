@@ -1,10 +1,8 @@
-"""The listener: pulls onboarding facts out of what the user said, separately from
-the model that chats.
+"""The listener: reads what the user just said and reports onboarding facts.
 
-The chatting model is unreliable at bookkeeping (it answers "call you nova" or
-"i'm owen" nicely and forgets to save either), so one small single-purpose call
-reads the user's latest lines first and updates the session. The chat model then
-talks from that state.
+The chat model is good at conversation and bad at bookkeeping, so understanding
+is a separate, single-purpose call. The flow engine (flow.py) turns what it hears
+into state and beats; the chat model only answers free-form questions.
 """
 from __future__ import annotations
 
@@ -17,6 +15,7 @@ from openai import AsyncOpenAI
 from . import config
 from .session import Session
 
+_YES_NO = {"type": "string", "enum": ["yes", "no", "none"]}
 _FORMAT = {
     "type": "json_schema",
     "json_schema": {
@@ -25,35 +24,61 @@ _FORMAT = {
         "schema": {
             "type": "object",
             "additionalProperties": False,
-            "required": ["assistant_name", "assistant_name_declined", "user_name", "help_need", "declines_call"],
+            "required": ["assistant_name", "assistant_name_declined", "user_name", "user_name_declined",
+                         "help_need", "help_is_email", "no_idea", "call", "gmail", "name_confirmed",
+                         "asks_capabilities", "needs_answer"],
             "properties": {
                 "assistant_name": {"type": ["string", "null"]},
                 "assistant_name_declined": {"type": "boolean"},
                 "user_name": {"type": ["string", "null"]},
+                "user_name_declined": {"type": "boolean"},
                 "help_need": {"type": ["string", "null"]},
-                "declines_call": {"type": "boolean"},
+                "help_is_email": {"type": "boolean"},
+                "no_idea": {"type": "boolean"},
+                "call": _YES_NO,
+                "gmail": _YES_NO,
+                "name_confirmed": _YES_NO,
+                "asks_capabilities": {"type": "boolean"},
+                "needs_answer": {"type": "boolean"},
             },
         },
     },
 }
 
-_PROMPT = """You read the latest lines of a conversation between an AI assistant and a user, \
-and report facts the USER stated. Only use what the lines marked USER say.
+PENDING = {
+    "agent_name": "what the user wants to name the assistant",
+    "call": "whether the assistant can give them a quick phone call",
+    "user_name": "the user's own name",
+    "confirm_name": "whether their name is {owner} (as their email says)",
+    "first_action": "what they'd like help with / to start with",
+    "gmail": "whether to connect their Gmail",
+}
 
-- assistant_name: a name the user gives the ASSISTANT, including renames ("call you nova", "how about juno?", \
-"rename to bob", "actually call yourself max", or just "nova" when the assistant asked what to call it). \
-Null if none. Null if it looks like a keyboard mash or an accident ("asdfjkl") rather than a name.
-- assistant_name_declined: true if, asked to name the assistant, they won't pick ("you pick", "idk", \
-"whatever", "doesn't matter").
-- user_name: the user's OWN name ("i'm owen", "owen here", or just "owen" when asked their name). \
-Never a name they're giving the assistant ("rename to bob" is the assistant's name). Null if none.
-- help_need: what they want help with in their life or work, as a short phrase in their terms (max 8 words, \
-e.g. "staying on top of email"). Not a request about this conversation ("call me", "send the link", \
-"rename yourself"). Null if they didn't say.
-- declines_call: true only if they clearly say they don't want a phone call ("not big on calls", \
-"let's just text"). False if they're asking for a call ("call me", "call again") or it's ambiguous.
+_PROMPT = """You read what a USER just said to an AI assistant during onboarding, and report facts. \
+Use only the USER lines. If a field doesn't apply, use null / false / "none".
 
-Capitalize names like names."""
+- assistant_name: a name the user gives the ASSISTANT, including renames ("call you nova", "rename to bob", \
+or just "nova" when it asked what to call it). Null if it looks like a keyboard mash.
+- assistant_name_declined: asked to name the assistant, they won't pick ("you pick", "idk", "whatever").
+- user_name: the user's OWN name ("i'm owen", or just "owen" when asked their name). Never a name for the \
+assistant. If they confirm the name the assistant proposed ("yep that's me"), leave this null and set \
+name_confirmed instead.
+- user_name_declined: they explicitly refuse to share their name ("i'd rather not say", "no names"). Not \
+answering, or changing the subject, is NOT declining.
+- help_need: something concrete they want help with or to start with, as a short clean phrase (max 8 \
+words, e.g. "staying on top of email"). Not a request about this conversation ("call me", "send the link").
+- help_is_email: true if that help_need is about their email/inbox (reading, sorting, replying, \
+summarizing email). False for anything else (Slack, calendar, research…) or if there's no help_need.
+- no_idea: asked what they need help with, they don't have anything in mind ("not sure", "nothing really").
+- call: "yes" if they agree to a phone call or ask to be called; "no" if they decline one; else "none".
+- gmail: "yes" if they agree to connect Gmail / ask for the link; "no" if they decline; else "none".
+- name_confirmed: "yes"/"no" if they answered whether a proposed name is theirs; else "none".
+- asks_capabilities: they ask what the assistant can do / help with.
+- needs_answer: they asked a question or said something that deserves a real reply beyond these facts \
+(greetings, questions, jokes, a new topic). False when they're simply answering the assistant's question, \
+even with a bit of color ("nova", "sure", "i'm owen", "email for sure, it's a mess", "no thanks").
+
+A bare "sure"/"yes"/"no" answers the assistant's pending question, given below."""
 
 
 @dataclass
@@ -61,29 +86,38 @@ class Heard:
     assistant_name: str | None = None
     assistant_name_declined: bool = False
     user_name: str | None = None
+    user_name_declined: bool = False
     help_need: str | None = None
-    declines_call: bool = False
+    help_is_email: bool = False
+    no_idea: bool = False
+    call: str = "none"
+    gmail: str = "none"
+    name_confirmed: str = "none"
+    asks_capabilities: bool = False
+    needs_answer: bool = False
 
 
-def missing(session: Session) -> bool:
-    return not (session.agent_name and session.user_name and session.help_need and session.call_offer_done)
-
-
-async def listen(session: Session, user_lines: list[str], context: str = "") -> Heard:
+async def listen(session: Session, user_lines: list[str], context: str = "",
+                 pending: str | None = None, transcript: bool = False) -> Heard:
+    """What the user's lines tell us. `transcript` mode reads a whole call (both sides)."""
     cfg = config.settings()
-    if not cfg.openai_api_key or not user_lines or not missing(session):
+    if not cfg.openai_api_key or not user_lines:
         return Heard()
-    state = []
-    state.append("The assistant has no name yet and has asked the user to name it." if not session.agent_name
-                 else f"The assistant is already named {session.agent_name}.")
+    from .lines import INBOX_OWNER
+
+    known = [f"The assistant is {'named ' + session.agent_name if session.agent_name else 'not named yet'}."]
     if session.user_name:
-        state.append(f"The user's name is already known ({session.user_name}).")
-    snippet = "\n".join(state) + "\n\n" + (f"ASSISTANT: {context}\n" if context else "") + \
-        "\n".join(f"USER: {t}" for t in user_lines)
+        known.append(f"The user's name is {session.user_name}.")
+    if pending:
+        known.append(f"The assistant's pending question is about: {PENDING.get(pending, pending)}."
+                     .format(owner=INBOX_OWNER))
+    body = "\n".join(user_lines) if transcript else (
+        (f"ASSISTANT: {context}\n" if context else "") + "\n".join(f"USER: {t}" for t in user_lines))
     try:
         r = await AsyncOpenAI(api_key=cfg.openai_api_key).chat.completions.create(
             model=cfg.text_model,
-            messages=[{"role": "system", "content": _PROMPT}, {"role": "user", "content": snippet}],
+            messages=[{"role": "system", "content": _PROMPT},
+                      {"role": "user", "content": " ".join(known) + "\n\n" + body}],
             response_format=_FORMAT,
             temperature=0,
         )
@@ -95,18 +129,12 @@ async def listen(session: Session, user_lines: list[str], context: str = "") -> 
     def clean(v):
         return v.strip()[:60] if isinstance(v, str) and v.strip() else None
 
-    heard = Heard(clean(data.get("assistant_name")), bool(data.get("assistant_name_declined")),
-                  clean(data.get("user_name")), clean(data.get("help_need")), bool(data.get("declines_call")))
-    logger.info(f"[{session.id[:8]}] heard: {heard}")
+    heard = Heard(
+        clean(data.get("assistant_name")), bool(data.get("assistant_name_declined")),
+        clean(data.get("user_name")), bool(data.get("user_name_declined")),
+        clean(data.get("help_need")), bool(data.get("help_is_email")), bool(data.get("no_idea")),
+        data.get("call", "none"), data.get("gmail", "none"), data.get("name_confirmed", "none"),
+        bool(data.get("asks_capabilities")), bool(data.get("needs_answer")),
+    )
+    logger.info(f"[{session.id[:8]}] heard (pending {pending}): {heard}")
     return heard
-
-
-def since_last_reply(session: Session) -> tuple[list[str], str]:
-    """The user's lines since the agent last spoke, and what the agent last said."""
-    lines: list[str] = []
-    for t in reversed(session.history):
-        if t.role == "assistant":
-            return list(reversed(lines)), t.content
-        if t.role == "user":
-            lines.append(t.content)
-    return list(reversed(lines)), ""

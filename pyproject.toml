@@ -1,14 +1,14 @@
 [project]
-name = "onboarding"
-version = "0.1.0"
-description = "Conversational onboarding: iMessage-style text + voice call, one shared session"
+name = "persona-onboarding"
+version = "1.0.0"
+description = "Persona onboarding: an iMessage-style chat that turns into a phone call"
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "python-dotenv>=1.0",
     "openai>=1.60",
-    "pipecat-ai[openai,webrtc,silero]",
+    "pipecat-ai[openai,webrtc]>=1.12,<2",
 ]
 
 [tool.uv]

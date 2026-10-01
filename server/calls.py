@@ -271,6 +271,8 @@ async def finished(session: Session, gen: int, error: str | None = None, reason:
                   if t.channel == "voice" and t.role in ("user", "assistant") and t.at >= (c_started or 0)]
     if transcript:
         await flow.absorb(session, await extract.listen(session, transcript, transcript=True))
+    if not session.agent_name:  # they called before naming it and didn't pick one on the call
+        await flow.set_default_name(session, "They didn't name you on the call")
     for item in agenda_open:  # it came up (or could have) on the call: one text follow-up left, at most
         session.ob["asks"][item] = max(session.ob["asks"][item], 1)
     session.ob["pending"] = None

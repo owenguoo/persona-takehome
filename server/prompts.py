@@ -82,12 +82,17 @@ def text_system(s: Session, p: Plan) -> str:
 def call_flow(s: Session) -> str:
     """How this call should go, given what's already known."""
     steps = []
+    if not s.agent_name:  # they tapped call before naming it
+        steps.append("You don't have a name yet: say hi and ask what they'd like to call you (e.g. \"hey! i'm your "
+                     "new persona and i don't have a name yet. what do you want to call me?\"). If they don't want to "
+                     "pick, go by \"Your Persona\" and move on.")
     if s.user_name:
         steps.append(f"Greet them by name ({s.user_name}) and ask what you can help them with.")
     elif flow.status(s, "user_name") == "declined":
         steps.append("Greet them (they'd rather not share their name) and ask what you can help them with.")
     else:
-        steps.append(f"Introduce yourself as {s.agent_name or 'Persona'} and ask their name.")
+        steps.append(f"Introduce yourself as {s.agent_name} and ask their name." if s.agent_name else
+                     "Then ask their name.")
         steps.append("Then: \"nice to meet you, <name>. what can i help you with?\" (Don't offer them the option of "
                      "not saying their name. Only if they decline on their own: no worries, skip it and just ask what "
                      "you can help with.)")

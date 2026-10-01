@@ -338,6 +338,8 @@ def call_event_beats(s: Session, kind: str) -> list[str]:
             "blocked": "call_blocked", "blocked_again": "call_blocked_again", "ended": "after_call", "cancelled": "after_cancel",
             "dropped": "after_drop", "short": "after_short", "silence": "after_silence"}[kind]
     beats = [lead]
+    if s.agent_name and not s.ob.get("card_sent") and not s.ob["contact_saved"]:
+        beats.append("share_contact")  # named on the call (they called first): the card still needs to go out
     if kind != "blocked":  # blocked waits for the contact to be saved
         nxt = next_ask(s)
         if nxt:
@@ -376,9 +378,9 @@ async def _name_timeout(session: Session) -> None:
         return
     if session.agent_name:
         return
-    if session.typing or (session.reply_task and not session.reply_task.done()):
+    if session.call.status != "idle" or session.typing or (session.reply_task and not session.reply_task.done()):
         session.name_timer = None
-        arm_name_timer(session)  # the agent is mid-reply; check again after
+        arm_name_timer(session)  # on a call (it may get named there) or mid-reply: check again later
         return
     session.name_timer = None
     session.ob["pending"] = None

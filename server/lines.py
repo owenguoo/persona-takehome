@@ -33,6 +33,7 @@ LINES: dict[str, Line] = {
     "default_named": Line("no name yet? i'll go by \"{agent_name}\" for now, you can rename me anytime\n"
                           "here's my contact, save it so my calls come through", action="contact_card"),
     "renamed": Line("{agent_name} it is"),
+    "share_contact": Line("here's my contact, save it so my calls come through", action="contact_card"),
     # ── the call ──
     "offer_call": Line("can i give you a quick call? it's faster than texting", asks="call"),
     "calling_now": Line("calling you now 📞", action="ring"),

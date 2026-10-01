@@ -589,7 +589,12 @@
   // ── boot ─────────────────────────────────────────────────────
   setLayout(store.get('shell.layout') || 'auto');
   setTheme(store.get('shell.theme') || 'auto');
-  if (store.get('shell.dev') === '1') $('[data-dev]').classList.add('open');
+  // The shell controls (fire a call, send a Gmail link, switch layouts…) are for development: add ?dev to the URL.
+  if (new URLSearchParams(location.search).has('dev')) {
+    if (store.get('shell.dev') === '1') $('[data-dev]').classList.add('open');
+  } else {
+    $('[data-dev]').remove();
+  }
 
   render();
   renderCall();

@@ -17,8 +17,8 @@ Open http://localhost:5173 in Chrome or Safari and allow the mic when the call
 comes in. It works on desktop (a Mac Messages window) and on a phone-sized
 screen (iOS Messages).
 
-Add `?dev` to the URL for a small panel of shell controls (force a call, send
-the Gmail card, reset the session, switch layouts). It's hidden by default.
+There's a "Restart onboarding" button in the corner if you want to go again
+from scratch.
 
 ## How it goes
 
@@ -76,41 +76,3 @@ after a long silence instead of sitting on a dead line.
 Every way a call can end (hang up, decline, missed, mic blocked, tab closed,
 an error) runs through one function in `calls.py`, which leaves a single
 record in the thread and hands things back to text with a fitting follow-up.
-
-## Gmail
-
-Gmail is simulated. Real inbox access needs Google's app verification, which
-wasn't realistic here. The link connects a sample inbox belonging to "Alex",
-which is why Persona asks if that's you when it doesn't know your name. The
-inbox tab turns into an editor where you can add, edit and delete mail.
-Persona sees those changes as background context but never texts you about
-them. All mail access goes through a few functions in `mail.py`, so a real
-provider could slot in behind them.
-
-## Things I'd do next
-
-- Real Gmail OAuth, with push notifications instead of the editor.
-- Actually doing the handed-off tasks. Right now "I'm on it" for Slack,
-  calendar and so on is where it stops.
-- A real database. Sessions are JSON files in `.data/` for now.
-- Proper phone numbers (Twilio or similar) instead of a browser call.
-
-## Layout
-
-```
-web/          landing page, iMessage + call UI, Gmail connect page, inbox editor
-server/
-  app.py         routes, the thread websocket, WebRTC offer, mail API
-  session.py     per-visitor state, saved to .data/
-  flow.py        what's missing, what to say next, the stall loop
-  lines.py       the written lines (edit the wording here)
-  extract.py     the listener
-  text_agent.py  iMessage replies
-  calls.py       call lifecycle
-  voice.py       the voice pipeline
-  mail.py        the simulated inbox
-  prompts.py     prompts for text and voice
-```
-
-Optional settings for `.env`: `OPENAI_TEXT_MODEL`, `OPENAI_REALTIME_MODEL`,
-`OPENAI_VOICE`, and `NAME_TIMEOUT_SECS` (default 25).

@@ -3,7 +3,6 @@
   // Tapping "Connect Gmail" just connects: a brief beat, then the inbox.
   const $ = (s) => document.querySelector(s);
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  try { const t = localStorage.getItem('shell.theme'); if (t && t !== 'auto') document.documentElement.dataset.theme = t; } catch { /* private mode */ }
 
   const sid = new URLSearchParams(location.search).get('sid');
   const inboxUrl = (welcome) => `/inbox.html?sid=${encodeURIComponent(sid)}${welcome ? '&welcome=1' : ''}`;

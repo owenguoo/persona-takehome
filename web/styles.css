@@ -619,37 +619,25 @@ body[data-layout="iphone"] .ios { display: flex; }
 }
 
 /* ─────────────────────────────────────────────────────────────
-   Shell controls
+   Restart onboarding
    ───────────────────────────────────────────────────────────── */
-.dev {
+.restart {
   position: fixed; left: 16px; bottom: 16px; z-index: 100;
-  display: flex; flex-direction: column-reverse; align-items: flex-start; gap: 8px;
-  font-size: 12px; color: #fff;
-}
-.dev-toggle, .dev-panel {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 13px 8px 11px; border-radius: 999px;
+  font-size: 12px; font-weight: 500; color: #fff;
   background: rgba(24, 24, 28, .78);
   -webkit-backdrop-filter: blur(24px) saturate(1.6);
   backdrop-filter: blur(24px) saturate(1.6);
   box-shadow: 0 0 0 .5px rgba(255, 255, 255, .12), 0 16px 40px -12px rgba(0, 0, 0, .5);
+  transition: background .15s;
 }
-.dev-toggle { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; color: #fff; }
-.dev-toggle svg { width: 18px; height: 18px; }
-.dev-panel { display: none; width: 252px; padding: 12px; border-radius: 16px; }
-.dev.open .dev-panel { display: block; animation: fadein .2s ease both; }
-.dev-title { font-size: 13px; font-weight: 600; margin-bottom: 10px; }
-.dev-group { margin-bottom: 11px; }
-.dev-label { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; opacity: .5; margin-bottom: 6px; font-weight: 600; }
-.dev-btns { display: flex; flex-wrap: wrap; gap: 6px; }
-.chip { padding: 5px 10px; border-radius: 8px; background: rgba(255, 255, 255, .1); transition: background .15s; }
-.chip:hover { background: rgba(255, 255, 255, .18); }
-.chip.wide { width: 100%; padding: 7px; }
-.seg { display: flex; padding: 2px; border-radius: 9px; background: rgba(255, 255, 255, .08); }
-.seg button { flex: 1; padding: 5px 0; border-radius: 7px; transition: background .15s; }
-.seg button.on { background: rgba(255, 255, 255, .22); font-weight: 600; }
+.restart:hover { background: rgba(44, 44, 50, .85); }
+.restart svg { width: 14px; height: 14px; }
 
 @media (max-width: 859.98px) {
-  .dev { left: auto; right: 10px; bottom: auto; top: calc(env(safe-area-inset-top) + 118px); flex-direction: column; align-items: flex-end; }
-  .dev-toggle { width: 34px; height: 34px; opacity: .8; }
+  .restart { left: auto; right: 10px; bottom: auto; top: calc(env(safe-area-inset-top) + 118px); padding: 8px; opacity: .8; font-size: 0; gap: 0; }
+  .restart svg { width: 16px; height: 16px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -706,7 +694,7 @@ body[data-layout="iphone"] .ios { display: flex; }
 }
 
 body[data-view="landing"] .stage,
-body[data-view="landing"] .dev { display: none; }
+body[data-view="landing"] .restart { display: none; }
 body[data-view="chat"] .landing { display: none; }
 
 .landing {

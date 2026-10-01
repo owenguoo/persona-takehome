@@ -114,17 +114,8 @@ async def handle(session: Session, data: dict) -> None:
         await calls.fail(session, str(data.get("reason", "")))
     elif kind == "hangup":
         await calls.hangup(session, "user")
-    # ── shell controls ──
-    elif kind == "dev_ring":
-        await calls.ring(session)
     elif kind == "save_contact":
         await calls.contact_saved(session)
-    elif kind == "dev_nudge":
-        nxt = flow.next_ask(session)
-        text_agent.send_beats(session, [nxt] if nxt else [], answer=not nxt,
-                              note="" if nxt else "Send a short, friendly follow-up.")
-    elif kind == "dev_card":
-        await mail.send_link(session)
 
 
 # ── simulated Gmail ───────────────────────────────────────────────

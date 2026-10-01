@@ -441,21 +441,6 @@
     voice.start();
   }
 
-  // ── shell controls ───────────────────────────────────────────
-  function setLayout(v) {
-    document.body.dataset.layout = v;
-    store.set('shell.layout', v);
-    markSeg('layout', v);
-  }
-  function setTheme(v) {
-    if (v === 'auto') delete document.documentElement.dataset.theme;
-    else document.documentElement.dataset.theme = v;
-    store.set('shell.theme', v);
-    markSeg('theme', v);
-  }
-  function markSeg(name, v) {
-    $$(`[data-seg="${name}"] button`).forEach((b) => b.classList.toggle('on', b.dataset.value === v));
-  }
   function setView(view) {
     document.body.dataset.view = view;
   }
@@ -529,25 +514,8 @@
         el.animate([{ transform: 'scale(.97)' }, { transform: 'none' }], { duration: 220, easing: 'ease-out' });
         return;
 
-      case 'dev-toggle': {
-        const dev = $('[data-dev]');
-        dev.classList.toggle('open');
-        store.set('shell.dev', dev.classList.contains('open') ? '1' : '0');
-        return;
-      }
-      case 'dev-msg': return send({ type: 'dev_nudge' });
-      case 'dev-typing':
-        state.typing = !state.typing;
-        return render();
-      case 'dev-card': return send({ type: 'dev_card' });
-      case 'dev-inbox':
-        if (state.sid) window.open(`/inbox.html?sid=${encodeURIComponent(state.sid)}`, '_blank', 'noopener');
-        return;
-      case 'dev-ring': return send({ type: 'dev_ring' });
-      case 'dev-reset': return restart();
+      case 'restart': return restart();
       case 'start': return start();
-      case 'layout': return setLayout(el.dataset.value);
-      case 'theme': return setTheme(el.dataset.value);
     }
   });
 
@@ -587,15 +555,6 @@
   setInterval(clock, 15000);
 
   // ── boot ─────────────────────────────────────────────────────
-  setLayout(store.get('shell.layout') || 'auto');
-  setTheme(store.get('shell.theme') || 'auto');
-  // The shell controls (fire a call, send a Gmail link, switch layouts…) are for development: add ?dev to the URL.
-  if (new URLSearchParams(location.search).has('dev')) {
-    if (store.get('shell.dev') === '1') $('[data-dev]').classList.add('open');
-  } else {
-    $('[data-dev]').remove();
-  }
-
   render();
   renderCall();
   if (state.sid) {

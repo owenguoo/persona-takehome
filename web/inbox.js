@@ -2,7 +2,6 @@
   'use strict';
   const $ = (s, r = document) => r.querySelector(s);
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  try { const t = localStorage.getItem('shell.theme'); if (t && t !== 'auto') document.documentElement.dataset.theme = t; } catch { /* private mode */ }
 
   const params = new URLSearchParams(location.search);
   const sid = params.get('sid');

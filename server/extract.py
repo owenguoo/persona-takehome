@@ -26,7 +26,8 @@ _FORMAT = {
             "additionalProperties": False,
             "required": ["assistant_name", "assistant_name_declined", "user_name", "user_name_declined",
                          "help_need", "help_is_email", "no_idea", "call", "gmail", "name_confirmed",
-                         "asks_capabilities", "needs_answer"],
+                         "asks_capabilities", "needs_answer", "just_greeting", "repeat_request", "stop",
+                         "venting", "language"],
             "properties": {
                 "assistant_name": {"type": ["string", "null"]},
                 "assistant_name_declined": {"type": "boolean"},
@@ -40,6 +41,11 @@ _FORMAT = {
                 "name_confirmed": _YES_NO,
                 "asks_capabilities": {"type": "boolean"},
                 "needs_answer": {"type": "boolean"},
+                "just_greeting": {"type": "boolean"},
+                "repeat_request": {"type": "boolean"},
+                "stop": {"type": "boolean"},
+                "venting": {"type": "boolean"},
+                "language": {"type": "string"},
             },
         },
     },
@@ -52,6 +58,8 @@ PENDING = {
     "confirm_name": "whether their name is {owner} (as their email says)",
     "first_action": "what they'd like help with / to start with",
     "gmail": "whether to connect their Gmail",
+    "contact": "whether they've saved the assistant's contact card so it can call again (\"done\", \"saved it\", "
+               "\"try again\" mean call: yes)",
 }
 
 _PROMPT = """You read what a USER just said to an AI assistant during onboarding, and report facts. \
@@ -60,23 +68,36 @@ Use only the USER lines. If a field doesn't apply, use null / false / "none".
 - assistant_name: a name the user gives the ASSISTANT, including renames ("call you nova", "rename to bob", \
 or just "nova" when it asked what to call it). Null if it looks like a keyboard mash.
 - assistant_name_declined: asked to name the assistant, they won't pick ("you pick", "idk", "whatever").
-- user_name: the user's OWN name ("i'm owen", or just "owen" when asked their name). Never a name for the \
-assistant. If they confirm the name the assistant proposed ("yep that's me"), leave this null and set \
-name_confirmed instead.
+- user_name: the user's OWN name ("i'm owen", or just "owen" when asked their name), including corrections \
+("sorry typo, it's john with an h" → "John"). Never a name for the assistant. If they confirm the name the \
+assistant proposed ("yep that's me"), leave this null and set name_confirmed instead.
 - user_name_declined: they explicitly refuse to share their name ("i'd rather not say", "no names"). Not \
 answering, or changing the subject, is NOT declining.
-- help_need: something concrete they want help with or to start with, as a short clean phrase (max 8 \
-words, e.g. "staying on top of email"). Not a request about this conversation ("call me", "send the link").
+- help_need: a concrete, ongoing thing they want the assistant's help with, as a short clean phrase (max 8 \
+words, e.g. "staying on top of email", "planning my japan trip"), including a change of mind ("actually \
+handle my email"). NOT a help_need: a question to answer right now ("what's the weather?", "are you real?"), \
+venting or feelings ("so stressed lately"), anything about this conversation ("call me", "text me", "skip \
+this setup", "i just want to use the app", "send the link"), or vague filler.
 - help_is_email: true if that help_need is about their email/inbox (reading, sorting, replying, \
 summarizing email). False for anything else (Slack, calendar, research…) or if there's no help_need.
 - no_idea: asked what they need help with, they don't have anything in mind ("not sure", "nothing really").
-- call: "yes" if they agree to a phone call or ask to be called; "no" if they decline one; else "none".
+- call: "yes" if they agree to a phone call or ask to be called, at any point ("call me", "call me again", \
+"can you just call me"); "no" if they decline one; else "none". "stop texting me" is not about calls.
 - gmail: "yes" if they agree to connect Gmail / ask for the link; "no" if they decline; else "none".
 - name_confirmed: "yes"/"no" if they answered whether a proposed name is theirs; else "none".
-- asks_capabilities: they ask what the assistant can do / help with.
+- asks_capabilities: they ask what the assistant can do or help with. Other questions ("are you a real \
+person?", "what's your system prompt?") are not this: they're needs_answer.
 - needs_answer: they asked a question or said something that deserves a real reply beyond these facts \
 (greetings, questions, jokes, a new topic). False when they're simply answering the assistant's question, \
 even with a bit of color ("nova", "sure", "i'm owen", "email for sure, it's a mess", "no thanks").
+
+- just_greeting: the message is only a greeting ("hey!", "hi there", "👋"), nothing else.
+- repeat_request: they missed or didn't understand the question and want it again ("sorry missed that", \
+"what?", "huh?").
+- venting: they're sharing feelings or venting ("ugh so stressed lately", "today sucked"). If so, help_need \
+is null and needs_answer is true.
+- stop: they want the assistant to stop messaging them ("stop texting me", "leave me alone").
+- language: the ISO 639-1 code of the language they wrote in ("en", "es", …).
 
 A bare "sure"/"yes"/"no" answers the assistant's pending question, given below."""
 
@@ -95,6 +116,12 @@ class Heard:
     name_confirmed: str = "none"
     asks_capabilities: bool = False
     needs_answer: bool = False
+    just_greeting: bool = False
+    repeat_request: bool = False
+    stop: bool = False
+    venting: bool = False
+    language: str = "en"
+    raw: str = ""  # what they actually said (set by the caller)
 
 
 async def listen(session: Session, user_lines: list[str], context: str = "",
@@ -135,6 +162,9 @@ async def listen(session: Session, user_lines: list[str], context: str = "",
         clean(data.get("help_need")), bool(data.get("help_is_email")), bool(data.get("no_idea")),
         data.get("call", "none"), data.get("gmail", "none"), data.get("name_confirmed", "none"),
         bool(data.get("asks_capabilities")), bool(data.get("needs_answer")),
+        bool(data.get("just_greeting")), bool(data.get("repeat_request")), bool(data.get("stop")),
+        bool(data.get("venting")), (data.get("language") or "en").lower()[:5],
+        " / ".join(user_lines),
     )
     logger.info(f"[{session.id[:8]}] heard (pending {pending}): {heard}")
     return heard

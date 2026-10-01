@@ -82,6 +82,7 @@ async def main():
         "u1": "Hey! I'm Owen.",
         "u2": "Honestly my inbox is a mess. Could you help me figure out what needs a reply?",
         "u3": "Yeah, send me the link.",
+        "u4": "Yeah, which ones need a reply from me today?",
     }
     audio = {k: tts(v) for k, v in lines.items()}
     sid = str(uuid.uuid4()); page = "probe-" + uuid.uuid4().hex[:8]
@@ -150,7 +151,14 @@ async def main():
             log(f">> agent started talking {starts[n] - connect_at:.1f}s after connecting")
         except asyncio.TimeoutError:
             log(">> agent said nothing within 20s of connecting")
-        # The agent should confirm, say it's reading the email, and hang up by itself.
+        # It should confirm, ask if there's anything to do in the email; we name one thing.
+        await asyncio.sleep(1.5)
+        while True:
+            await asyncio.wait_for(quiet.wait(), 40)
+            mark = len(starts); await asyncio.sleep(3)
+            if len(starts) == mark and quiet.is_set(): break
+        await say("u4")
+        # Then it should do that on the call, wrap up, and hang up by itself.
         ended_by_agent = False
         for _ in range(60):
             if call_state.get("status") == "idle":

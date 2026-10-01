@@ -31,7 +31,8 @@ MAX_BUBBLES = 3  # for one piece of the model's own text
 TOOLS = [
     {"type": "function", "function": {
         "name": "inbox_overview",
-        "description": "Their connected inbox at a glance: counts, top senders, the 10 most recent emails.",
+        "description": "Their connected inbox at a glance: counts, top senders, the 10 most recent emails. "
+                       "\"starred\" means the user starred it.",
         "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {
         "name": "read_inbox",
@@ -67,9 +68,9 @@ def schedule_reply(session: Session, delay: float = 0.9) -> None:
 
 
 def send_beats(session: Session, beats: list[str], answer: bool = False, note: str = "",
-               complete: tuple[str, str | None] | None = None) -> None:
+               complete: tuple[str, str | None] | None = None, lead: list[str] | None = None) -> None:
     """Send lines on Persona's own initiative (a call event, the name timeout, a stall)."""
-    _schedule(session, _deliver(session, Plan(beats, answer, note, complete)), 0.4)
+    _schedule(session, _deliver(session, Plan(beats, answer, note, complete, lead or [])), 0.4)
 
 
 def schedule_line(session: Session, key: str, delay: float = 0.9) -> None:
@@ -139,6 +140,15 @@ async def _reply(session: Session) -> None:
     await session.set_typing(True)
     started = time.monotonic()
     said, asked = _unheard(session)
+    if session.call.status != "idle":
+        # One conversation at a time: while a call is ringing or live, the call does the talking.
+        # What they texted is taken in as facts, and a live call acknowledges it out loud.
+        await flow.absorb(session, await extract.listen(session, said, asked))
+        if said and session.call.status == "active" and session.call.inject:
+            asyncio.create_task(session.call.inject(
+                f"They just texted you: \"{' / '.join(said)}\". Acknowledge it out loud in a few words and carry on."))
+        await session.set_typing(False)
+        return
     heard = await extract.listen(session, said, asked, pending=session.ob["pending"])
     await _deliver(session, await flow.plan(session, heard), started)
 
@@ -157,18 +167,23 @@ def _unheard(session: Session) -> tuple[list[str], str]:
 
 
 async def _deliver(session: Session, p: Plan, started: float | None = None) -> None:
-    bubbles: list[tuple[str, str]] = []
+    bubbles: list[tuple[str, str]] = [(b.strip(), key) for key in p.lead
+                                      for b in render(key, session).split("\n") if b.strip()]
     if p.answer and config.settings().openai_api_key:
         await session.set_typing(True)
         started = started or time.monotonic()
-        bubbles += [(b, "custom") for b in split_bubbles(await _write_answer(session, p))]
+        answer = [(b, "custom") for b in split_bubbles(await _write_answer(session, p))]
         if any(LINES[k].asks for k in p.beats):
             # A scripted question follows: the model's part mustn't ask (or echo) one itself.
             beat_text = " ".join(_norm(render(k, session)) for k in p.beats)
-            bubbles = [(b, src) for b, src in bubbles
-                       if not b.rstrip().endswith("?") and _norm(b) not in beat_text]
-    for key in p.beats:
-        bubbles += [(b.strip(), key) for b in render(key, session).split("\n") if b.strip()]
+            answer = [(b, src) for b, src in answer if not b.rstrip().endswith("?") and _norm(b) not in beat_text]
+        bubbles += answer
+    scripted = [(b.strip(), key) for key in p.beats for b in render(key, session).split("\n") if b.strip()]
+    lang = session.ob.get("lang") or "en"
+    if scripted and lang != "en" and config.settings().openai_api_key:
+        texts = await _translate([b for b, _ in scripted], lang)  # same lines, same actions, their language
+        scripted = [(t, key) for t, (_, key) in zip(texts, scripted)]
+    bubbles += scripted
     deduped: list[tuple[str, str]] = []
     for bubble, src in bubbles:
         if not deduped or bubble.lower() != deduped[-1][0].lower():
@@ -248,6 +263,26 @@ async def _write_answer(session: Session, p: Plan) -> str:
             messages.append({"role": "tool", "tool_call_id": tc.id,
                              "content": _run_tool(session, tc.function.name, tc.function.arguments)})
     return ""
+
+
+async def _translate(texts: list[str], lang: str) -> list[str]:
+    """Translate the approved lines into the user's language (falls back to English)."""
+    cfg = config.settings()
+    try:
+        r = await _openai(cfg.openai_api_key).chat.completions.create(
+            model=cfg.text_model, temperature=0,
+            messages=[{"role": "system", "content": f"Translate each casual text message into language '{lang}', "
+                       "keeping the tone, names and emoji. Return {\"texts\": [...]} in the same order."},
+                      {"role": "user", "content": json.dumps({"texts": texts}, ensure_ascii=False)}],
+            response_format={"type": "json_schema", "json_schema": {"name": "t", "strict": True, "schema": {
+                "type": "object", "additionalProperties": False, "required": ["texts"],
+                "properties": {"texts": {"type": "array", "items": {"type": "string"}}}}}},
+        )
+        out = json.loads(r.choices[0].message.content or "{}").get("texts", [])
+        return out if len(out) == len(texts) else texts
+    except Exception:
+        logger.exception("translation failed")
+        return texts
 
 
 def _run_tool(session: Session, name: str, raw_args: str) -> str:

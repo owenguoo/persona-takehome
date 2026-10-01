@@ -25,6 +25,7 @@ If stalled, Persona double-texts the next ask, once.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from dataclasses import dataclass, field
 
@@ -35,7 +36,7 @@ from .lines import INBOX_OWNER, LINES
 from .session import Session
 
 DEFAULT_AGENT_NAME = "Your Persona"
-MAX_ASKS = {"agent_name": 1, "call": 1, "user_name": 2, "first_action": 2, "gmail": 2}
+MAX_ASKS = {"agent_name": 2, "call": 2, "user_name": 2, "first_action": 2, "gmail": 2}
 ORDER = ["call", "user_name", "first_action", "gmail"]  # what to ask next, in order
 
 
@@ -45,6 +46,24 @@ def tidy_name(raw: str) -> str:
     if name and name == name.lower() and any(c.isalpha() for c in name):
         name = " ".join(w[:1].upper() + w[1:] for w in name.split())
     return name
+
+
+_NOT_A_NAME = re.compile(r"\b(system|admin|administrator|override|ignore|instruction|prompt|developer|assistant)\b",
+                         re.IGNORECASE)
+
+
+# Deterministic guards on top of the listener's judgment.
+CALL_REQUEST = re.compile(r"\b(call me|give me a call|ring me|phone me)\b(\s+(now|again|instead|back|please|pls|asap))*"
+                          r"\s*[?!.]*\s*$|\bcan you (just )?(call|ring|phone) me\b", re.IGNORECASE)
+NOT_A_TASK = re.compile(r"^\s*(call|phone|ring)( me)?\b|\btext(ing)? me\b|\bset ?up\b|\bonboarding\b|\bthe app\b"
+                        r"|\bstress(ed)?\b|\banxious\b", re.IGNORECASE)
+ASKS_CAPABILITIES = re.compile(r"what (can|do|else can) you (do|help)|what are you (for|good at)|how can you help"
+                               r"|what do you do\b", re.IGNORECASE)
+
+
+def plausible_name(name: str | None) -> bool:
+    """Short, a few words, and not an instruction smuggled in as a name."""
+    return bool(name) and len(name) <= 24 and len(name.split()) <= 3 and not _NOT_A_NAME.search(name)
 
 
 # ── item state ──────────────────────────────────────────────────
@@ -70,7 +89,7 @@ def askable(s: Session, item: str) -> bool:
 
 
 def onboarding_open(s: Session) -> bool:
-    if s.ob.get("complete"):
+    if s.ob.get("complete") or s.ob.get("ready"):  # ready: every question asked; waiting on a first task
         return False
     return any(askable(s, item) for item in ORDER) or not s.agent_name
 
@@ -82,7 +101,8 @@ async def complete(s: Session, kind: str, task: str | None = None) -> None:
         return
     s.ob.update(complete=True, task=task, pending=None)
     s.changed()
-    detail = {"email": f" · working on: {task}", "other": f" · handed off: {task}"}.get(kind, "") if task else ""
+    detail = {"email": f" · working on: {task}", "other": f" · handed off: {task}",
+              "task": f" · first task: {task}"}.get(kind, "") if task else ""
     logger.info(f"[{s.id[:8]}] onboarding complete ({kind}{', ' + task if task else ''})")
     await s.add_message("system", "event", f"Onboarding complete{detail}", emphasis="Onboarding complete")
     s.remember("system", "Onboarding is complete" + (f"; you're working on: {task}" if task else ""))
@@ -128,9 +148,10 @@ def note_sent(s: Session, line_key: str) -> None:
     """Bookkeeping once a line has gone out."""
     asks = LINES[line_key].asks
     if asks:
-        s.ob["asks"][item_of(line_key)] += 1
+        s.ob["asks"][item_of(line_key)] = s.ob["asks"].get(item_of(line_key), 0) + 1
         s.ob["pending"] = asks
         s.ob["last_ask"] = asks
+        s.ob["last_ask_line"] = line_key
         if asks == "confirm_name":
             s.ob["confirm_asked"] = True
     s.changed()
@@ -141,6 +162,7 @@ def note_sent(s: Session, line_key: str) -> None:
 class Plan:
     beats: list[str] = field(default_factory=list)  # approved lines, in order
     answer: bool = False  # the chat model writes a reply first (before the beats)
+    lead: list[str] = field(default_factory=list)  # lines sent before the model's reply
     note: str = ""
     complete: tuple[str, str | None] | None = None  # (kind, task): mark onboarding done after sending
 
@@ -157,33 +179,65 @@ async def plan(s: Session, heard) -> Plan:
 
     ob, p = s.ob, Plan()
     pending, ob["pending"] = ob["pending"], None
+    ob["paused"] = False  # any message from them resumes things
+    if heard.asks_capabilities and not ASKS_CAPABILITIES.search(heard.raw or ""):
+        heard.asks_capabilities, heard.needs_answer = False, True  # "are you real?" deserves a real answer
+    if heard.call == "none" and CALL_REQUEST.search(heard.raw or ""):
+        heard.call = "yes"  # "can you just call me?" is a call request, whatever else it looks like
+    if heard.help_need and (heard.venting or NOT_A_TASK.search(heard.help_need)):
+        heard.help_need = None  # venting, "call me", "skip setup" aren't things to work on...
+        heard.needs_answer = heard.call != "yes"  # ...but they deserve a real reply (unless it's a call request)
+    if heard.language:
+        ob["lang"] = heard.language
 
-    # 1 · Persona's name (a name any time is a name or a rename)
+    # They want quiet: say so once, then wait until they text again.
+    if heard.stop:
+        ob.update(paused=True, retry_call=False)
+        s.remember("system", "They asked you to stop messaging: don't message them until they text again")
+        p.beats.append("leave_be")
+        return _done(s, p)
+
+    # They missed the question: ask it again (they asked for it, so it's not a repeat).
+    if heard.repeat_request and pending and ob.get("last_ask_line"):
+        ob["asks"][item_of(ob["last_ask_line"])] -= 1  # doesn't use up an ask
+        p.beats.append(ob["last_ask_line"])
+        return _done(s, p)
+
+    # 1 · Persona's name: a plausible name any time is a name or a rename
     name = tidy_name(heard.assistant_name) if heard.assistant_name else None
-    if name and name != s.agent_name:
+    if name and plausible_name(name) and name != s.agent_name:
         first = s.agent_name is None
         cancel_name_timer(s)
         await s.set_agent_name(name)
         s.remember("system", f"The user {'named' if first else 'renamed'} you {name}")
         p.beats.append("named" if first else "renamed")
     elif not s.agent_name and pending == "agent_name":
-        # Anything but a name (a question, "you pick", a mash): default, never re-ask.
-        await set_default_name(s, "They didn't give you a name")
-        p.beats.append("default_named")
+        if heard.just_greeting and askable(s, "agent_name"):
+            p.beats.append("greet_ask_name")  # "hey!" isn't an answer: greet back and ask once more
+        else:  # a question, "you pick", junk: default (never forced)
+            await set_default_name(s, "They didn't give you a name")
+            p.beats.append("default_named")
 
-    # the call: a request always wins; the offer is answered once
+    if pending == "contact" and heard.call != "yes":
+        ob["retry_call"] = False  # they moved on; they can still ask to be called any time
+
+    # the call: a request to be called always wins
     if heard.call == "yes" and s.call.status == "idle":
         ob["status"]["call"] = "accepted"
         p.beats.append("calling_now")
     elif heard.call == "no" and status(s, "call") == "open":
         ob["status"]["call"] = "declined"
+        ob["retry_call"] = False
         s.remember("system", "They'd rather not have a call (call only if they ask)")
         p.beats.append("keep_texting")
 
-    # 2 · their name
-    if heard.user_name and not s.user_name:
-        s.set_user_name(tidy_name(heard.user_name))
-        p.beats.append("nice_to_meet")
+    # 2 · their name (corrections welcome)
+    user = tidy_name(heard.user_name) if heard.user_name else None
+    if user and plausible_name(user) and user != s.user_name:
+        first = not s.user_name
+        s.set_user_name(user)
+        ob["status"]["user_name"] = "open"
+        p.beats.append("nice_to_meet" if first else "name_fixed")
     elif heard.user_name_declined and status(s, "user_name") == "open":
         ob["status"]["user_name"] = "declined"
         s.remember("system", "They'd rather not share their name: never use one")
@@ -192,48 +246,63 @@ async def plan(s: Session, heard) -> Plan:
         s.set_user_name(INBOX_OWNER)
         p.beats.append("nice_to_meet")
 
-    # 4 · first action → the endgame
+    # 4 · first action (changing their mind is fine)
     new_task = None
-    if heard.help_need and not s.help_need:
+    if heard.help_need and heard.help_need != s.help_need:
         s.set_help_need(heard.help_need)
         ob["help_is_email"] = heard.help_is_email
         new_task = heard.help_need
     elif heard.no_idea and pending == "first_action" and status(s, "first_action") == "open":
         ob["status"]["first_action"] = "none"
         s.remember("system", "They don't have anything in mind yet")
-    if heard.asks_capabilities and status(s, "first_action") == "open":
+    if heard.asks_capabilities and not s.help_need:
         p.beats.append("capabilities")  # the scripted answer to "what can you do?"
 
     # 3 · gmail
     if heard.gmail == "yes" and gmail_status(s) != "connected":
-        p.beats.append("gmail_link")
+        # the link may already be out (it comes with gmail_for_ideas): point at it, don't resend
+        p.beats.append("tap_link" if ob.get("last_ask_line") == "gmail_for_ideas" else "gmail_link")
     elif heard.gmail == "no" and gmail_status(s) == "none":
         await mail.deny(s)
         p.beats.append("gmail_declined")
 
+    questions_done = s.agent_name and not any(askable(s, i) for i in ORDER)
     if new_task and not ob.get("complete"):
-        if not heard.help_is_email:  # outside email: on it, and onboarding's done
-            p.beats.append("on_it")
-            p.complete = ("other", new_task)
-        elif gmail_status(s) == "connected":  # email, already connected: just do it
-            p.answer, p.note = True, EMAIL_TASK_NOTE
+        if ob["help_is_email"] and gmail_status(s) == "connected":
+            p.answer, p.note = True, EMAIL_TASK_NOTE  # an email task, connected: do it. That's the first action.
             p.complete = ("email", new_task)
-        elif askable(s, "gmail"):  # email: connecting Gmail comes first
-            p.beats.append("gmail_offer")
+        elif ob["help_is_email"] and askable(s, "gmail") and "gmail_link" not in p.beats:
+            p.beats.append("gmail_offer")  # email: connecting Gmail comes first
+        elif questions_done:
+            p.beats.append("on_it")  # set up already: this is the first real task
+            p.complete = ("other", new_task)
+        else:
+            p.beats.append("noted_task")  # honest: noted for later, and onboarding carries on
 
-    # then the next question, unless this reply already asks one, waits on an action, or onboarding's done
-    waiting = any(LINES[b].action in ("ring", "gmail_card") for b in p.beats)
+    # then the next question, unless this reply already asks one, waits on an action, or it's all done
+    waiting = any(LINES[b].action in ("ring", "gmail_card") or b == "tap_link" for b in p.beats)
     if not waiting and not any(LINES[b].asks for b in p.beats) and not ob.get("complete") and not p.complete:
         nxt = "ask_user_name" if pending == "confirm_name" and heard.name_confirmed == "no" else next_ask(s)
         if nxt:
             p.beats.append(nxt)
-        elif s.agent_name and not onboarding_open(s):  # nothing left to ask, no task: wrap up
+        elif questions_done and s.help_need and not new_task:
+            # Every question's been asked and a task was noted earlier: now it's the first action.
+            p.beats.append("on_it")
+            p.complete = ("other", s.help_need)
+        elif questions_done and not ob.get("ready"):
+            # Nothing left to ask and no task yet: say so once. "Complete" waits for a real first task.
             p.beats.append("all_set")
-            p.complete = ("none", None)
+            ob["ready"] = True
 
-    handing_off = p.complete and p.complete[0] == "other"  # "on it" is the whole answer
-    p.answer = p.answer or (heard.needs_answer and "capabilities" not in p.beats and not handing_off) \
+    capabilities_answered = heard.asks_capabilities and "capabilities" in p.beats
+    calling = heard.call == "yes" and "calling_now" in p.beats  # "calling you now" is the answer
+    no_idea = heard.no_idea and "gmail_for_ideas" in p.beats    # so is "no worries, connect gmail…"
+    p.answer = p.answer or (heard.needs_answer and not capabilities_answered and not calling and not no_idea) \
         or not p.beats
+    return _done(s, p)
+
+
+def _done(s: Session, p: Plan) -> Plan:
     s.changed()
     logger.info(f"[{s.id[:8]}] plan: answer={p.answer} beats={p.beats}")
     return p
@@ -244,16 +313,18 @@ async def absorb(s: Session, heard) -> None:
     from . import mail  # avoid an import cycle
 
     name = tidy_name(heard.assistant_name) if heard.assistant_name else None
-    if name and name != s.agent_name:
+    if name and plausible_name(name) and name != s.agent_name:
         await s.set_agent_name(name)
-    if heard.user_name and not s.user_name:
-        s.set_user_name(tidy_name(heard.user_name))
+    user = tidy_name(heard.user_name) if heard.user_name else None
+    if user and plausible_name(user) and user != s.user_name:
+        s.set_user_name(user)
     elif heard.name_confirmed == "yes" and not s.user_name:
         s.set_user_name(INBOX_OWNER)
     elif heard.user_name_declined and status(s, "user_name") == "open":
         s.ob["status"]["user_name"] = "declined"
-    if heard.help_need and not s.help_need:
+    if heard.help_need and heard.help_need != s.help_need:
         s.set_help_need(heard.help_need)
+        s.ob["help_is_email"] = heard.help_is_email
     elif heard.no_idea and status(s, "first_action") == "open":
         s.ob["status"]["first_action"] = "none"
     if heard.gmail == "no" and gmail_status(s) == "none":
@@ -264,7 +335,8 @@ async def absorb(s: Session, heard) -> None:
 def call_event_beats(s: Session, kind: str) -> list[str]:
     """What Persona texts after a call event: an acknowledgement, then the next ask."""
     lead = {"declined": "after_decline", "missed": "after_missed", "failed": "call_failed",
-            "blocked": "call_blocked", "ended": "after_call"}[kind]
+            "blocked": "call_blocked", "blocked_again": "call_blocked_again", "ended": "after_call", "cancelled": "after_cancel",
+            "dropped": "after_drop", "short": "after_short", "silence": "after_silence"}[kind]
     beats = [lead]
     if kind != "blocked":  # blocked waits for the contact to be saved
         nxt = next_ask(s)
@@ -326,7 +398,7 @@ MAX_NUDGES = 1  # double texts per silence
 
 def waiting_on_user(s: Session) -> bool:
     """True if the ball is in the user's court."""
-    if s.call.status != "idle" or s.ob["pending"] or s.ob["retry_call"]:
+    if s.ob.get("paused") or s.call.status != "idle" or s.ob["pending"] or s.ob["retry_call"]:
         return True  # a call is on, a question is out, or a blocked call waits on the contact
     last = next((m for m in reversed(s.messages) if m.kind != "event"), None)
     if last is None or last.sender == "user":
@@ -343,6 +415,9 @@ def after_agent_turn(session: Session) -> None:
 
 def user_spoke(session: Session) -> None:
     session.nudges_since_user = 0
+    t = session.call_retry_task  # their reply decides what happens next (e.g. "done" → call now)
+    if t and not t.done():
+        t.cancel()
     if session.stall_task and not session.stall_task.done():
         session.stall_task.cancel()
 

@@ -244,7 +244,7 @@ body[data-layout="iphone"] .ios { display: flex; }
 .bubble.callrec { display: flex; align-items: center; gap: 10px; cursor: pointer; }
 .cr-icon { width: 32px; height: 32px; border-radius: 50%; background: var(--green); color: #fff; display: grid; place-items: center; flex: none; }
 .cr-icon svg { width: 17px; height: 17px; }
-.callrec.missed .cr-icon, .callrec.declined .cr-icon { background: var(--red); }
+.callrec.missed .cr-icon, .callrec.declined .cr-icon, .callrec.silenced .cr-icon { background: var(--red); }
 .cr-text { display: flex; flex-direction: column; line-height: 1.22; white-space: nowrap; }
 .cr-text b { font-weight: 600; }
 .cr-text small { font-size: .8em; color: var(--text-2); font-variant-numeric: tabular-nums; }

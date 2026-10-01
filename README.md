@@ -16,23 +16,27 @@ people don't play by the rules.
 
 Onboarding is four small flows, plus the call that carries most of them:
 
-1. **Persona's name.** Asked first. Anything but a name (a question, "you pick",
-   25s of silence) → **Your Persona**, never re-asked. Then Persona sends its
-   **contact card**: calls only ring once it's saved, like an iPhone silencing
-   unknown callers. Otherwise "call didn't go through: not in your contacts".
+1. **Persona's name.** Asked first. A bare "hey!" gets one friendly re-ask;
+   anything else that isn't a name (a question, "you pick", 25s of silence) →
+   **Your Persona**. Then Persona sends its **contact card**: calls only ring
+   once it's saved, like an iPhone silencing unknown callers. Persona can't see
+   the save (iMessage doesn't say), so after a silenced call it checks in
+   ("saved me?") and tries once more.
 2. **Their name.** Asked on the call (or by text). "I'd rather not say" is
    final. Once Gmail is connected: "your email says you're Alex, is that right?"
 3. **Gmail.** Offered on the call: the link is texted mid-call. "No" is final.
 4. **A first action.** "What can I help you with?" (or "what can you do?").
-   Email → Gmail flow. Anything else → "on it, I'll text you when it's done."
-   Nothing in mind → suggest Gmail.
+   Email → Gmail flow. Nothing in mind → the Gmail link, with the suggestion.
+   Anything else is noted honestly and onboarding carries on.
 
 The call: introduce + ask their name → "nice to meet you, what can I help you
 with?" → for email, text the link, confirm it connected, "reading through your
 email now, I'll text you when I'm done", hang up, then actually text the
-result. For anything else, "I'm on it" and hang up. The thread then shows
-**Onboarding complete** with the handed-off task: where onboarding ends and
-real work begins.
+result. For anything else, "I'm on it" and hang up.
+
+**Onboarding complete** appears in the thread only when the first real task
+starts, never just because the questions ran out: that's the line between
+onboarding and real work.
 
 ## Design choices
 
@@ -107,6 +111,13 @@ question just asked, so it sounds like the rest of the flow rather than a
 reminder. The name timeout is the same
 idea applied to the very first question.
 
+Calls get the same loop, so they aren't strictly turn-based either: if the
+agent said something that wasn't a question and the caller is quiet, it keeps
+things moving (twice at most); if it asked something and gets silence, it
+nudges once ("no rush, or I can suggest something"); while the caller opens the
+Gmail link it says "no rush, I'm here"; long silence gets "still there?", then
+a goodbye and a text follow-up.
+
 ### 5. Calls that can't get stuck
 
 Every way a call can end goes through one idempotent path, `calls.finished()`:
@@ -116,7 +127,11 @@ enforced in code: sending "calling you now" always rings, and the "the call
 didn't go through" line only exists after a real failure. A call belongs to the
 page holding its audio, which gets 4s to reconnect, so a network blip doesn't
 kill it but a closed tab does. If the user asks to be called, the agent calls,
-even after "let's just text" (that only stops it *offering*).
+even after "let's just text" (that only stops it *offering*). Endings get their
+own follow-up: cancelled while connecting ("no worries"), dropped ("we got cut
+off"), over in seconds ("that call ended quick"), silence ("seemed like a bad
+time"). Texts sent during a call are absorbed and acknowledged out loud, so the
+two channels never run separate conversations.
 
 The call itself is conversational, not an interview: it reacts more than it
 asks, backs off when the user hesitates, and waits for a real end of turn
@@ -140,7 +155,15 @@ because mail changed. With real Gmail the same events would come from push
 `overview` / `read_inbox` / `search` / `read` (`mail.py`), so a real provider
 could slot in behind them.
 
-### 7. Say less
+### 7. Honest about what it can do
+
+Persona can read the (simulated) inbox and text. It says plainly that it can't
+send email, set reminders or touch other apps yet, and never claims it did.
+Email contents are treated as data, never instructions; anything asking for
+credentials gets flagged as phishing. Injected "names" (`SYSTEM OVERRIDE…`)
+are rejected.
+
+### 8. Say less
 
 Prompts push for one short text, one question at a time, no filler, and voice
 turns of one sentence. Measured with `scripts/text_e2e.py`, that took replies
@@ -176,6 +199,9 @@ All three run against the live server and use the key in `.env`:
   call, talks, interrupts, asks to be texted, and hangs up; reports latencies.
 - `scripts/voice_gmail_e2e.py`: asks for the Gmail link on a call, taps it, and
   reports how fast and what the agent says.
+- `scripts/adversary_e2e.py`: users who don't play by the rules (greetings,
+  "call me" twice, venting, typos, injection, "stop texting me", Spanish,
+  refusing everything…), each checked against the saved session state.
 
 ## Models
 

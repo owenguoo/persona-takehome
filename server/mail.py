@@ -224,6 +224,8 @@ def link_url(session: Session) -> str:
 
 
 async def send_link(session: Session) -> None:
+    state(session)["link_sent"] = True
+    session.changed()
     await session.add_message("agent", "card", title="Connect Gmail", sub="Tap to connect your inbox",
                               url=f"/connect.html?sid={session.id}")
 
@@ -237,8 +239,6 @@ async def connect(session: Session) -> None:
     st["status"] = "connected"
     session.changed()
     logger.info(f"[{session.id[:8]}] gmail connected")
-    await session.add_message("system", "event", f"Gmail connected · {account(session)}", emphasis="Gmail connected",
-                              link=f"/inbox.html?sid={session.id}", link_text="Open inbox")
     if first:
         # Hand over the overview up front: one less tool round trip (and pause) on a live call.
         ov = overview(session)
@@ -253,18 +253,19 @@ async def connect(session: Session) -> None:
 
         if session.call.status == "active" and session.call.inject:
             # What they asked for on this call isn't saved until it ends, so the call decides.
-            note = (f"{overview_note} It worked: confirm that in a few words. If they asked for something "
-                    "email-related, tell them you're reading through their email now and will text them when "
-                    "you're done, then call end_call with kind \"email\" and the task. Otherwise mention ONE "
-                    "concrete, useful thing from it (only emails listed here or returned by the inbox tools).")
+            note = (f"{overview_note} It worked: confirm that in a few words, then ask if there's anything in their "
+                    "email they'd like you to do (if they already said, just do it). Do that one thing right there on "
+                    "the call with the inbox tools, then wrap up and end_call(kind=\"email\", task=what you did). "
+                    "If they say no, wrap up and end_call(kind=\"none\"). Only mention emails listed here or "
+                    "returned by the inbox tools.")
             asyncio.create_task(session.call.inject(note))
         elif email_task and not session.ob.get("complete"):
             text_agent.send_beats(session, [], answer=True, note=f"{overview_note} {flow.EMAIL_TASK_NOTE}",
-                                  complete=("email", email_task))
+                                  complete=("email", email_task), lead=["gmail_connected"])
         else:
             nxt = flow.next_ask(session)
             text_agent.send_beats(
-                session, [nxt] if nxt else [], answer=True,
+                session, [nxt] if nxt else [], answer=True, lead=["gmail_connected"],
                 note=f"{overview_note} React with ONE concrete, useful observation tied to what they need "
                      "(read_email for details). Only mention emails listed here or returned by the inbox tools.")
 

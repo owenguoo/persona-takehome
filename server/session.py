@@ -73,6 +73,11 @@ class Call:
     owner: str | None = None  # page id holding the call's audio
     note: Any = None  # async callable: add silent context to the live call (no reply)
     speaking: bool = False  # the agent is talking right now
+    user_speaking: bool = False
+    last_heard_at: float = 0.0  # last time either side said anything (for the silence check-in)
+    agent_asked: bool = False   # the agent's last turn ended in a question
+    agent_spoke: bool = False   # the agent has said something on this call
+    ending: bool = False        # end_call was called: the goodbye is the last word
     inject: Any = None  # async callable: tell the live call something (set by the voice pipeline)
 
 
@@ -94,6 +99,7 @@ class Session:
         self.reply_task: asyncio.Task | None = None
         self.line_task: asyncio.Task | None = None  # a scripted line being sent (e.g. the opener)
         self.sending_task: asyncio.Task | None = None  # the reply currently sending bubbles
+        self.call_retry_task: asyncio.Task | None = None  # check-in + retry after a blocked call
         self.stall_task: asyncio.Task | None = None  # checks, after each agent turn, whether things stalled
         self.user_typing_at = 0.0
         self.nudges_since_user = 0  # double texts sent since the user last spoke

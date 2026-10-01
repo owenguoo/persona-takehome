@@ -61,6 +61,14 @@ def _describe(error: str, cfg: config.Settings) -> str | None:
     return None
 
 
+GREET_AFTER_SECS = 1.3   # wait for a "hello?" before greeting
+MOVE_ON_SECS = 3.5       # stalled: said something that isn't a question, they're quiet → keep it moving
+MAX_MOVE_ONS = 2         # …at most this many times in a row without them speaking
+NUDGE_SECS = 8           # asked something, no answer → one gentle nudge
+LINK_WAIT_SECS = 10      # waiting on the Gmail link → one "no rush"
+SILENCE_CHECK_SECS = 15  # quiet this long → "still there?"; again → goodbye and hang up
+
+
 class CallTap(FrameProcessor):
     """Sits after the output transport: streams live captions + speaking state to the page."""
 
@@ -83,6 +91,7 @@ class CallTap(FrameProcessor):
             elif isinstance(frame, (BotStoppedSpeakingFrame, InterruptionFrame)):
                 self._new_turn = True
                 s.call.speaking = False
+                s.call.last_heard_at = time.time()
                 await s.emit("speaking", on=False)
             elif isinstance(frame, TTSTextFrame):
                 if self._new_turn:
@@ -150,6 +159,7 @@ async def run_call(session: Session, connection: SmallWebRTCConnection, generati
                 task: What they asked you to do, in a few words (empty for "none").
             """
             session.ob["handoff"] = {"kind": kind if kind in ("email", "other") else "none", "task": task.strip()}
+            session.call.ending = True
             session.changed()
             logger.info(f"[{session.id[:8]}] call  tool: end_call {session.ob['handoff']}")
             # The goodbye was said before this call: don't prompt another turn.
@@ -278,21 +288,104 @@ async def run_call(session: Session, connection: SmallWebRTCConnection, generati
         @transport.event_handler("on_client_connected")
         async def on_client_connected(_transport, _client):
             await calls.connected(session)
-            await worker.queue_frames([LLMRunFrame()])
+            session.call.last_heard_at = time.time()
+            asyncio.create_task(greet_unless_they_speak_first())
+            asyncio.create_task(watch_silence())
 
-        @transport.event_handler("on_client_disconnected")
-        async def on_client_disconnected(_transport, _client):
-            await runner.cancel()
+        async def greet_unless_they_speak_first():
+            # People answer with "hello?". Give them a beat; if they talk first, the reply to them
+            # carries the greeting, so their opening words aren't talked over or lost.
+            await asyncio.sleep(GREET_AFTER_SECS)
+            if session.call.generation == generation and not session.call.user_speaking \
+                    and not any(t.role == "user" and t.channel == "voice" and t.at >= (session.call.started_at or 0)
+                                for t in session.history):
+                await worker.queue_frames([LLMRunFrame()])
 
-        # Captions are the agent's side only: the user's turn is finalized when the
-        # agent starts replying, so showing it would flash over the agent's caption.
+        async def watch_silence():
+            """The call's version of the text-side loop: don't just wait for your turn.
+
+            STALLED (said something that wasn't a question, they're quiet): keep it moving.
+            WAITING on an answer (asked something, they're quiet): nudge gently, once.
+            WAITING on the Gmail link: one easy "no rush".
+            Long silence: "still there?", then a goodbye and hang up (follow up by text).
+            """
+            moved_on = 0          # proactive turns since they last spoke
+            nudged = linked = checked_in = False
+            while session.call.generation == generation and session.call.status == "active":
+                await asyncio.sleep(0.5)
+                c = session.call
+                if c.ending or c.speaking or c.user_speaking or not c.agent_spoke:
+                    continue
+                quiet = time.time() - c.last_heard_at
+                if user_spoke_since[0]:  # they talked: reset the nudges
+                    user_spoke_since[0] = False
+                    moved_on, nudged, linked, checked_in = 0, False, False, False
+                link_out = (session.mail or {}).get("link_sent") and not mail.connected(session)
+                if link_out:
+                    if not linked and quiet >= LINK_WAIT_SECS:
+                        linked = True
+                        await inject("They're opening the Gmail link. Say one easy line like \"no rush, i'm here\".")
+                        c.last_heard_at = time.time()
+                    elif quiet >= SILENCE_CHECK_SECS * 2:
+                        await say_goodbye_and_hang_up()
+                        return
+                    continue
+                if not c.agent_asked and moved_on < MAX_MOVE_ONS and quiet >= MOVE_ON_SECS:
+                    moved_on += 1
+                    await inject("They haven't said anything and your last line wasn't a question. Just say the next "
+                                 "thing in your flow, in one short line, as if continuing your thought. Never announce "
+                                 "that you're moving on, and don't repeat yourself.")
+                    c.last_heard_at = time.time()
+                elif c.agent_asked and not nudged and quiet >= NUDGE_SECS:
+                    nudged = True
+                    await inject("They haven't answered your question. Nudge gently in one line: offer to skip it "
+                                 "or suggest something (e.g. \"no rush, or i can suggest something\"). Never repeat "
+                                 "the question word for word.")
+                    c.last_heard_at = time.time()
+                elif quiet >= SILENCE_CHECK_SECS:
+                    if not checked_in:
+                        checked_in = True
+                        await inject("They've been quiet for a while. Check in, briefly and warmly (\"still there?\").")
+                        c.last_heard_at = time.time()
+                    else:
+                        await say_goodbye_and_hang_up()
+                        return
+
+        async def say_goodbye_and_hang_up():
+            await inject("Still nothing. Say a short, warm goodbye (you'll text them instead). Don't call any tool.")
+            session.call.ending = True
+            for _ in range(60):  # let the goodbye finish
+                await asyncio.sleep(0.2)
+                if not session.call.speaking and time.time() - session.call.last_heard_at > 1.2:
+                    break
+            if session.call.generation == generation:
+                await calls.hangup(session, "silence")
+
+        user_spoke_since = [False]  # set when they speak; the loop resets its nudges
+
+        @user_agg.event_handler("on_user_turn_started")
+        async def on_user_started(_agg, _strategy):
+            session.call.user_speaking = True
+            session.call.last_heard_at = time.time()
+            user_spoke_since[0] = True
+
+        @user_agg.event_handler("on_user_turn_stopped")
+        async def on_user_stopped(_agg, _strategy, _message):
+            session.call.user_speaking = False
+            session.call.last_heard_at = time.time()
+
         @user_agg.event_handler("on_user_turn_message_added")
         async def on_user_turn(_agg, message: UserTurnMessageAddedMessage):
             logger.info(f"[{session.id[:8]}] call  user: {message.content}")
             session.remember("user", message.content, "voice")
+            session.call.user_speaking = False
+            session.call.last_heard_at = time.time()
 
         @assistant_agg.event_handler("on_assistant_turn_stopped")
         async def on_assistant_turn(_agg, message: AssistantTurnStoppedMessage):
+            if message.content and message.content.strip():
+                session.call.agent_spoke = True
+                session.call.agent_asked = message.content.rstrip().endswith("?")
             suffix = " (interrupted)" if message.interrupted else ""
             logger.info(f"[{session.id[:8]}] call agent: {message.content or '(nothing)'}{suffix}")
             if message.content:

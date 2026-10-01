@@ -60,31 +60,51 @@ async def ring(session: Session) -> bool:
     return True
 
 
+CONTACT_CHECK_SECS = 15  # after "save my card and i'll try again": "saved me?"
+CONTACT_RETRY_SECS = 15  # …and this long after that, try calling again
+
+
 async def _blocked(session: Session) -> None:
     """Their phone silenced the call: Persona isn't a saved contact yet."""
     _offer_done(session)
+    logger.info(f"[{session.id[:8]}] call blocked: contact not saved")
+    await session.add_message("agent", "call", status="silenced")  # how a silenced unknown caller shows up
+    session.remember("system", "Your call didn't go through: they haven't saved your contact card yet")
+    if session.ob.get("auto_retried"):  # already tried once more: say so and carry on by text
+        session.ob["retry_call"] = False
+        session.changed()
+        _follow_up(session, "blocked_again")
+        return
     session.ob["retry_call"] = True
     session.changed()
-    name = session.agent_name or "Persona"
-    logger.info(f"[{session.id[:8]}] call blocked: contact not saved")
-    await session.add_message("system", "event", f"Call from {name} didn't go through: not in your contacts",
-                              emphasis="didn't go through")
-    session.remember("system", "Your call didn't go through: they haven't saved your contact card yet")
     _follow_up(session, "blocked")
+    if session.call_retry_task and not session.call_retry_task.done():
+        session.call_retry_task.cancel()
+    session.call_retry_task = asyncio.create_task(_check_and_retry(session))
+
+
+async def _check_and_retry(session: Session) -> None:
+    """Persona can't see the contact being saved (iMessage doesn't say), so it checks in, then tries again.
+    Cancelled if they reply first: their answer decides ("done" → call now)."""
+    try:
+        await asyncio.sleep(CONTACT_CHECK_SECS)
+        if session.ob["retry_call"] and session.call.status == "idle":
+            text_agent.send_beats(session, ["contact_check"])
+        await asyncio.sleep(CONTACT_RETRY_SECS)
+    except asyncio.CancelledError:
+        return
+    if session.ob["retry_call"] and session.call.status == "idle" and session.ob["status"]["call"] == "accepted":
+        session.ob["auto_retried"] = True
+        text_agent.send_beats(session, ["calling_now"])
 
 
 async def contact_saved(session: Session) -> None:
-    """They tapped Add on Persona's contact card. Retry a call that was blocked."""
-    if session.ob["contact_saved"]:
-        return
-    session.ob["contact_saved"] = True
-    session.changed()
-    name = session.agent_name or "Persona"
-    await session.emit("contact_saved")
-    await session.add_message("system", "event", f"Contact saved as {name}", emphasis=name)
-    session.remember("system", "They saved your contact card")
-    if session.ob["retry_call"] and session.call.status == "idle":
-        text_agent.send_beats(session, ["calling_now"])  # "i'll try again"
+    """They saved Persona's card on their (simulated) phone. Persona can't see this, as in real iMessage:
+    it only means the next call will ring."""
+    if not session.ob["contact_saved"]:
+        session.ob["contact_saved"] = True
+        session.changed()
+        await session.emit("contact_saved")
 
 
 async def _ring_timeout(session: Session, gen: int) -> None:
@@ -159,13 +179,19 @@ async def _endgame(session: Session, handoff: dict) -> None:
     from . import mail  # avoid an import cycle
 
     kind, task = handoff["kind"], handoff.get("task") or session.help_need
+    if kind == "none":  # no task handed off: not complete (that waits for a first real task)
+        if flow.onboarding_open(session):
+            _follow_up(session, "ended")  # "i have to go": carry on by text
+        else:
+            session.ob["ready"] = True  # setup's done; the call already said "text me anything"
+            session.changed()
+        return
     if kind == "email" and mail.connected(session):
-        text_agent.send_beats(session, [], answer=True, note=f"On the call they asked: {task}. {flow.EMAIL_TASK_NOTE}",
-                              complete=("email", task))
+        await flow.complete(session, "email", task)  # done on the call: no need to redo it by text
     elif kind == "email":  # it never connected: back to text for Gmail
         _follow_up(session, "ended")
-    else:
-        await flow.complete(session, kind, task if kind == "other" else None)
+    else:  # "other": a real task, handed off on the call
+        await flow.complete(session, kind, task)
 
 
 async def connected(session: Session) -> None:
@@ -205,10 +231,13 @@ async def hangup(session: Session, reason: str = "user") -> None:
             await c.hangup()
         except Exception:
             logger.exception("voice hangup failed")
-    await finished(session, c.generation)
+    await finished(session, c.generation, reason=reason)
 
 
-async def finished(session: Session, gen: int, error: str | None = None) -> None:
+SHORT_CALL_SECS = 8
+
+
+async def finished(session: Session, gen: int, error: str | None = None, reason: str = "") -> None:
     """Final step for any call that got past ringing. Safe to call repeatedly."""
     c = session.call
     if c.generation != gen or c.status not in ("connecting", "active"):
@@ -219,18 +248,22 @@ async def finished(session: Session, gen: int, error: str | None = None) -> None
     c_started = c.started_at
     c.status, c.hangup, c.caption, c.owner = "idle", None, "", None
     c.inject, c.note, c.speaking = None, None, False
+    c.agent_asked = c.agent_spoke = c.ending = False
     await session.emit_call()
-    if was_active:
-        await session.add_message("agent", "call", status="ended", duration=duration)
+    if not was_active:  # it never got going
+        if reason == "user":  # they cancelled it themselves: no blaming the line
+            await session.add_message("agent", "call", status="cancelled")
+            session.remember("system", "They cancelled the call while it was connecting")
+            _follow_up(session, "cancelled")
+        else:
+            await session.add_message("system", "event", "Call couldn't connect")
+            session.remember("system", "The call dropped before it connected")
+            _follow_up(session, "failed")
+        return
+    await session.add_message("agent", "call", status="ended", duration=duration)
     if error:
         await session.add_message("system", "event", f"Call dropped: {error}")
         session.remember("system", f"The call dropped after {_fmt(duration)} because {error}")
-    elif not was_active:
-        await session.add_message("system", "event", "Call couldn't connect")
-        session.remember("system", "The call dropped before it connected")
-    if not was_active:
-        _follow_up(session, "failed")
-        return
 
     # What did we learn on the call? Read the whole transcript, both sides.
     agenda_open = [i for i in ("user_name", "first_action", "gmail") if flow.askable(session, i)]
@@ -244,10 +277,15 @@ async def finished(session: Session, gen: int, error: str | None = None) -> None
     session.changed()
     session.remember("system", f"Phone call ended after {_fmt(duration)}")
     handoff = session.ob.pop("handoff", None)
+    said_anything = any(t.role == "user" and t.channel == "voice" and t.at >= (c_started or 0) for t in session.history)
     if error:
-        _follow_up(session, "failed")
+        _follow_up(session, "dropped")  # it did go through: we got cut off
+    elif reason == "silence":
+        _follow_up(session, "silence")
     elif handoff and not session.ob.get("complete"):
         await _endgame(session, handoff)
+    elif duration < SHORT_CALL_SECS and not said_anything:
+        _follow_up(session, "short")  # not "good chatting" after three seconds of nothing
     elif flow.onboarding_open(session):
         _follow_up(session, "ended")
     else:  # nothing left to ask: a short, specific follow-up on the call

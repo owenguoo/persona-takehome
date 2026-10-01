@@ -27,9 +27,10 @@ class Line:
 LINES: dict[str, Line] = {
     # ── 1. Persona's name ──
     "opener": Line("hey! i'm your new persona 👋\nwhat do you want to call me?", asks="agent_name"),
+    "greet_ask_name": Line("hey! 👋 so, what do you want to call me?", asks="agent_name"),
     "named": Line("{agent_name}, i like it\nhere's my contact, save it so my calls come through",
                   action="contact_card"),
-    "default_named": Line("i'll go by {agent_name} for now, you can rename me anytime\n"
+    "default_named": Line("no name yet? i'll go by \"{agent_name}\" for now, you can rename me anytime\n"
                           "here's my contact, save it so my calls come through", action="contact_card"),
     "renamed": Line("{agent_name} it is"),
     # ── the call ──
@@ -37,15 +38,22 @@ LINES: dict[str, Line] = {
     "calling_now": Line("calling you now 📞", action="ring"),
     "keep_texting": Line("all good, texting works too"),
     "call_blocked": Line("my call didn't go through, i'm not in your contacts yet\n"
-                         "tap Add on my card and i'll try again"),
+                         "save my card and i'll try again", asks="contact"),
+    "contact_check": Line("saved me? i'll try calling again in a sec", asks="contact"),
+    "call_blocked_again": Line("looks like i'm still not in your contacts, no worries. we can keep texting"),
     "after_decline": Line("no worries, we can keep going here"),
     "after_missed": Line("tried calling, no stress. we can keep going here"),
     "call_failed": Line("hm, the call didn't go through. we can keep going here"),
+    "after_cancel": Line("no worries, we can keep going here"),
+    "after_drop": Line("sorry, we got cut off. we can keep going here"),
+    "after_short": Line("that call ended quick, no worries. we can keep going here"),
+    "after_silence": Line("seemed like a bad time, no worries. we can keep going here"),
     "after_call": Line("good chatting!"),
     # ── 2. their name ──
     "ask_user_name": Line("what's your name, by the way?", asks="user_name"),
     "confirm_email_name": Line("your email says you're {owner}, is that right?", asks="confirm_name"),
     "nice_to_meet": Line("nice to meet you, {user_name}"),
+    "name_fixed": Line("got it, {user_name}"),
     "no_name_ok": Line("all good, no names needed"),
     # ── 4. first action ──
     "ask_help": Line("what's one thing you'd love off your plate this week?", asks="first_action"),
@@ -54,11 +62,15 @@ LINES: dict[str, Line] = {
     # ── 3. gmail ──
     "gmail_offer": Line("want to connect your gmail? easier to show you than tell you", asks="gmail"),
     "gmail_for_ideas": Line("no worries. connect your gmail and i'll find something to take off your plate",
-                            asks="gmail"),
+                            asks="gmail", action="gmail_card"),  # the link comes with it: no "sure?" needed
+    "tap_link": Line("tap the link above and i'll take a look"),
+    "gmail_connected": Line("got it, i'm in. i can see your inbox now"),
     "gmail_link": Line("here's the link, tap it and i'll take a look", action="gmail_card"),
     "gmail_declined": Line("no problem, we'll leave email out of it"),
+    "noted_task": Line("got it, that's first on my list once you're set up"),
     # ── the endgame ──
     "on_it": Line("on it, i'll text you when it's done"),
+    "leave_be": Line("got it, i'll leave you be. text me anytime"),
     "all_set": Line("you're all set! if anything comes to mind, just text me"),
 }
 

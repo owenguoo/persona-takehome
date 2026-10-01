@@ -70,8 +70,10 @@
       }
       case 'call': {
         const st = m.meta.status;
-        const label = { ended: 'Audio Call', declined: 'Declined', missed: 'Missed Call' }[st] || 'Call';
-        const sub = st === 'ended' ? fmtDur(m.meta.duration || 0) : st === 'missed' ? 'Tap to call back' : 'Audio Call';
+        const label = { ended: 'Audio Call', declined: 'Declined', missed: 'Missed Call', cancelled: 'Cancelled',
+          silenced: 'Silenced Call' }[st] || 'Call';
+        const sub = st === 'ended' ? fmtDur(m.meta.duration || 0) : st === 'missed' ? 'Tap to call back'
+          : st === 'silenced' ? 'Not in your contacts' : 'Audio Call';
         return `<div class="bubble callrec ${esc(st)}" data-action="call-out">
           <span class="cr-icon">${icon('i-phone', st === 'ended' ? '' : 'rot')}</span>
           <span class="cr-text"><b>${label}</b><small>${sub}</small></span>
@@ -137,7 +139,7 @@
     if (!m) return '';
     if (m.kind === 'card') return `🔗 ${m.meta.title}`;
     if (m.kind === 'contact') return 'Contact card';
-    if (m.kind === 'call') return { ended: 'Audio Call', declined: 'Declined call', missed: 'Missed Call' }[m.meta.status] || 'Call';
+    if (m.kind === 'call') return { ended: 'Audio Call', declined: 'Declined call', missed: 'Missed Call', cancelled: 'Cancelled call', silenced: 'Silenced call' }[m.meta.status] || 'Call';
     return m.text;
   }
 

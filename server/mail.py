@@ -255,9 +255,8 @@ async def connect(session: Session) -> None:
             # What they asked for on this call isn't saved until it ends, so the call decides.
             note = (f"{overview_note} It worked: confirm that in a few words, then ask if there's anything in their "
                     "email they'd like you to do (if they already said, just do it). Do that one thing right there on "
-                    "the call with the inbox tools, then wrap up and end_call(kind=\"email\", task=what you did). "
-                    "If they say no, wrap up and end_call(kind=\"none\"). Only mention emails listed here or "
-                    "returned by the inbox tools.")
+                    "the call with the inbox tools, then close out as in Ending (kind \"email\"). If they say no, close out "
+                    "with kind \"none\". Only mention emails listed here or returned by the inbox tools.")
             asyncio.create_task(session.call.inject(note))
         elif email_task and not session.ob.get("complete"):
             text_agent.send_beats(session, [], answer=True, note=f"{overview_note} {flow.EMAIL_TASK_NOTE}",

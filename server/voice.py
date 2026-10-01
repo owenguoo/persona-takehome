@@ -62,6 +62,7 @@ def _describe(error: str, cfg: config.Settings) -> str | None:
 
 
 GREET_AFTER_SECS = 1.3   # wait for a "hello?" before greeting
+CLOSE_WAIT_SECS = 4      # after "anything else before i hang up?", this much quiet means no
 MOVE_ON_SECS = 3.5       # stalled: said something that isn't a question, they're quiet → keep it moving
 MAX_MOVE_ONS = 2         # …at most this many times in a row without them speaking
 NUDGE_SECS = 8           # asked something, no answer → one gentle nudge
@@ -149,7 +150,23 @@ async def run_call(session: Session, connection: SmallWebRTCConnection, generati
                 await mail.send_link(session)
             await params.result_callback({"sent": True})
 
-        async def end_call(params: FunctionCallParams, kind: str, task: str = ""):
+        async def wrap_up(params: FunctionCallParams, kind: str, task: str = ""):
+            """Start ending the call, right after you've said what happens next and asked if there's anything
+            else (e.g. "i'll get that to you in a sec. anything else before i hang up?").
+
+            Args:
+                kind: "email" if you're going to work on their email, "other" for something else they asked
+                    for, "none" if setup is simply done.
+                task: What you'll be doing for them, in a few words (empty for "none").
+            """
+            session.ob["handoff"] = {"kind": kind if kind in ("email", "other") else "none", "task": task.strip()}
+            session.call.closing = session.call.close_asked = True
+            session.changed()
+            logger.info(f"[{session.id[:8]}] call  tool: wrap_up {session.ob['handoff']}")
+            # The closing question was said before this call: wait for their answer.
+            await params.result_callback({"ok": True}, properties=FunctionCallResultProperties(run_llm=False))
+
+        async def end_call(params: FunctionCallParams, kind: str = "", task: str = ""):
             """Hang up, right after your short goodbye.
 
             Args:
@@ -158,7 +175,19 @@ async def run_call(session: Session, connection: SmallWebRTCConnection, generati
                     BEFORE calling this: nothing is said after it.
                 task: What they asked you to do, in a few words (empty for "none").
             """
-            session.ob["handoff"] = {"kind": kind if kind in ("email", "other") else "none", "task": task.strip()}
+            if kind or not session.ob.get("handoff"):  # wrap_up may already have recorded it
+                session.ob["handoff"] = {"kind": kind if kind in ("email", "other") else "none", "task": task.strip()}
+            if not session.call.close_asked:
+                # Never hang up abruptly: the first end_call becomes the closing question.
+                session.call.closing = session.call.close_asked = True
+                session.changed()
+                logger.info(f"[{session.id[:8]}] call  tool: end_call too early, closing first")
+                await params.result_callback(
+                    {"not_yet": "Before hanging up, say what happens next if you haven't (\"i'll get that to you in a "
+                                "sec\") and ask if there's anything else before you let them go. If they say no, "
+                                "say a quick bye and call end_call again."},
+                    properties=FunctionCallResultProperties(run_llm=True))
+                return
             session.call.ending = True
             session.changed()
             logger.info(f"[{session.id[:8]}] call  tool: end_call {session.ob['handoff']}")
@@ -209,7 +238,7 @@ async def run_call(session: Session, connection: SmallWebRTCConnection, generati
             # Only text_user: on a realtime call every tool call splits the agent's turn
             # around a pause, so anything that can wait (like saving the user's name)
             # is left to the text agent, which sees the call transcript afterwards.
-            [text_user, send_gmail_link, inbox_overview, read_inbox, search_inbox, read_email, end_call],
+            [text_user, send_gmail_link, inbox_overview, read_inbox, search_inbox, read_email, wrap_up, end_call],
         )
         user_agg, assistant_agg = LLMContextAggregatorPair(context)
 
@@ -320,6 +349,12 @@ async def run_call(session: Session, connection: SmallWebRTCConnection, generati
                 if user_spoke_since[0]:  # they talked: reset the nudges
                     user_spoke_since[0] = False
                     moved_on, nudged, linked, checked_in = 0, False, False, False
+                if c.closing:  # "anything else before i hang up?": a short pause means no
+                    if quiet >= CLOSE_WAIT_SECS:
+                        c.closing = False
+                        await inject("No answer, so they're all set. Say a quick, warm bye in a few words, "
+                                     "then call end_call.")
+                    continue
                 link_out = (session.mail or {}).get("link_sent") and not mail.connected(session)
                 if link_out:
                     if not linked and quiet >= LINK_WAIT_SECS:
@@ -365,6 +400,7 @@ async def run_call(session: Session, connection: SmallWebRTCConnection, generati
 
         @user_agg.event_handler("on_user_turn_started")
         async def on_user_started(_agg, _strategy):
+            session.call.closing = False  # they're saying something: hear them out
             session.call.user_speaking = True
             session.call.last_heard_at = time.time()
             user_spoke_since[0] = True

@@ -248,7 +248,7 @@ async def finished(session: Session, gen: int, error: str | None = None, reason:
     c_started = c.started_at
     c.status, c.hangup, c.caption, c.owner = "idle", None, "", None
     c.inject, c.note, c.speaking = None, None, False
-    c.agent_asked = c.agent_spoke = c.ending = False
+    c.agent_asked = c.agent_spoke = c.ending = c.closing = c.close_asked = False
     await session.emit_call()
     if not was_active:  # it never got going
         if reason == "user":  # they cancelled it themselves: no blaming the line

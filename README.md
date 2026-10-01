@@ -136,8 +136,10 @@ two channels never run separate conversations.
 The call itself is conversational, not an interview: it reacts more than it
 asks, backs off when the user hesitates, and waits for a real end of turn
 rather than a thinking pause (low-eagerness turn detection). It can end the
-call itself (`end_call`) once it needs to go do something, handing off the
-task, and the goodbye is the last thing said.
+call itself once it needs to go do something, but never abruptly: it says
+what happens next and asks "anything else before I hang up?" (`wrap_up`),
+then hangs up on a "no" or a short pause (`end_call`). An early `end_call` is
+turned into that closing question in code.
 
 ### 6. Gmail: simulated, and a context layer
 

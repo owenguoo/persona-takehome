@@ -78,6 +78,8 @@ class Call:
     agent_asked: bool = False   # the agent's last turn ended in a question
     agent_spoke: bool = False   # the agent has said something on this call
     ending: bool = False        # end_call was called: the goodbye is the last word
+    closing: bool = False       # wrap_up was called: "anything else before i hang up?"
+    close_asked: bool = False   # the closing question has been asked on this call
     inject: Any = None  # async callable: tell the live call something (set by the voice pipeline)
 
 
